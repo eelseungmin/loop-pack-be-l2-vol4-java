@@ -4,6 +4,9 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.loopers.domain.brand.BrandModel;
 import com.loopers.application.brand.BrandRepository;
+import com.loopers.domain.event.EventPublisher;
+import com.loopers.domain.user.UserActionLevel;
+import com.loopers.domain.user.UserActionLogEvent;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.application.product.ProductRepository;
 import com.loopers.support.error.CoreException;
@@ -29,6 +32,7 @@ public class ProductFacade {
     private final BrandRepository brandRepository;
     private final RedisTemplate<String, String> defaultRedisTemplate;
     private final ObjectMapper objectMapper;
+    private final EventPublisher eventPublisher;
 
     @Transactional(readOnly = true)
     public ProductInfo getProduct(Long id) {
@@ -36,6 +40,7 @@ public class ProductFacade {
         try {
             String cachedJson = defaultRedisTemplate.opsForValue().get(cacheKey);
             if (cachedJson != null) {
+                eventPublisher.publish(new UserActionLogEvent(null, "VIEW_PRODUCT", "{\"productId\":" + id + "}", UserActionLevel.LOW));
                 return objectMapper.readValue(cachedJson, ProductInfo.class);
             }
         } catch (Exception e) {
@@ -56,6 +61,7 @@ public class ProductFacade {
             log.error("Redis write error for key: {}", cacheKey, e);
         }
 
+        eventPublisher.publish(new UserActionLogEvent(null, "VIEW_PRODUCT", "{\"productId\":" + id + "}", UserActionLevel.LOW));
         return productInfo;
     }
 
