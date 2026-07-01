@@ -60,6 +60,9 @@ class OrderFacadeTest {
     @Mock
     private org.springframework.transaction.support.TransactionTemplate transactionTemplate;
 
+    @Mock
+    private com.loopers.domain.event.EventPublisher eventPublisher;
+
     @org.junit.jupiter.api.BeforeEach
     void setUp() {
         org.mockito.Mockito.lenient().when(transactionTemplate.execute(org.mockito.ArgumentMatchers.any())).thenAnswer(invocation -> {
