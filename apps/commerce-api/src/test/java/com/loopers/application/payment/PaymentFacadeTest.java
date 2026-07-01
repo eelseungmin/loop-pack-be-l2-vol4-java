@@ -57,6 +57,9 @@ class PaymentFacadeTest {
     @SpyBean
     private NotificationService notificationService;
 
+    @org.springframework.boot.test.mock.mockito.SpyBean
+    private com.loopers.domain.event.EventPublisher eventPublisher;
+
     @Autowired
     private DatabaseCleanUp databaseCleanUp;
 
@@ -93,6 +96,8 @@ class PaymentFacadeTest {
         String redisKey = "payment_retry:" + paymentId;
         Boolean hasKey = defaultRedisTemplate.hasKey(redisKey);
         assertThat(hasKey).isFalse();
+
+        Mockito.verify(eventPublisher).publish(Mockito.any(com.loopers.domain.payment.PaymentCompletedEvent.class));
     }
 
     @Test
