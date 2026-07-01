@@ -3,4 +3,5 @@ package com.loopers.application.payment;
 public interface NotificationService {
     void sendPaymentTimeout(Long userId, Long paymentId);
     void sendPaymentRefund(Long userId, Long paymentId);
+    void sendPaymentSuccess(Long userId, Long paymentId);
 }

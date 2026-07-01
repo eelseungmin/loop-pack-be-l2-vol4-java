@@ -3,11 +3,13 @@ package com.loopers.application.payment;
 import com.loopers.application.coupon.CouponRepository;
 import com.loopers.application.order.OrderRepository;
 import com.loopers.application.product.ProductFacade;
+import com.loopers.domain.event.EventPublisher;
 import com.loopers.domain.payment.PaymentMethod;
 import com.loopers.domain.payment.PaymentModel;
 import com.loopers.domain.payment.PaymentGateway;
 import com.loopers.domain.payment.PaymentGateway.PaymentGatewayResult;
 import com.loopers.domain.payment.PaymentStatus;
+import com.loopers.domain.payment.PaymentCompletedEvent;
 import com.loopers.support.error.CoreException;
 import com.loopers.support.error.ErrorType;
 import lombok.RequiredArgsConstructor;
@@ -34,6 +36,7 @@ public class PaymentFacade {
     private final CouponRepository couponRepository;
     private final NotificationService notificationService;
     private final io.github.resilience4j.circuitbreaker.CircuitBreaker pgCircuitBreaker;
+    private final EventPublisher eventPublisher;
 
     public PaymentStatus getPaymentStatus(Long paymentId) {
         return paymentRepository.findById(paymentId)
@@ -81,6 +84,12 @@ public class PaymentFacade {
             
             // 5. 성공 후 Redis 키 제거
             paymentTempStorage.deleteRetryKey(paymentId);
+
+            // 6. 결제 완료 이벤트 발행
+            Long userId = orderRepository.findById(orderId)
+                    .map(com.loopers.domain.order.OrderModel::getUserId)
+                    .orElse(null);
+            eventPublisher.publish(new PaymentCompletedEvent(paymentId, orderId, userId, amount));
         } catch (Exception e) {
             log.warn("Payment PG request timeout or failed, keeping READY status for payment id: {}", paymentId, e);
         }
@@ -114,6 +123,8 @@ public class PaymentFacade {
             orderRepository.save(order);
 
             paymentTempStorage.deleteRetryKey(paymentId);
+
+            eventPublisher.publish(new PaymentCompletedEvent(paymentId, payment.getOrderId(), order.getUserId(), payment.getAmount()));
         } else {
             Integer count = paymentTempStorage.getRetryCount(paymentId);
             if (count == null) {

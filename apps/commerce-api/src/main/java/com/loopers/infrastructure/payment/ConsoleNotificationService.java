@@ -15,6 +15,11 @@ public class ConsoleNotificationService implements NotificationService {
     @Override
     public void sendPaymentRefund(Long userId, Long paymentId) {
         log.info("Sending payment refund notification to user {}: payment {} refunded", userId, paymentId);
+     }
+
+    @Override
+    public void sendPaymentSuccess(Long userId, Long paymentId) {
+        log.info("Sending payment success notification to user {}: payment {} completed", userId, paymentId);
     }
 }
 
