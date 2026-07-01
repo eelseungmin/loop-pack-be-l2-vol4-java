@@ -203,33 +203,48 @@ sequenceDiagram
     activate Facade
 
     rect rgba(128, 128, 128, 0.2)
-        Note right of Facade: [@Transactional Begin]
+        Note right of Facade: [@Transactional Begin (핵심 로직)]
 
-        Facade->>Repo: 상품 존재 여부 조회 + 비관적 락 획득 (SELECT FOR UPDATE)
-        Repo-->>Facade: Product 엔티티 반환 (없으면 예외)
+        Facade->>Repo: 상품 존재 여부 확인 (락 없음)
+        Repo-->>Facade: Product 엔티티 반환
 
         Facade->>Repo: 좋아요 데이터 존재 여부 조회
-        Repo-->>Facade: 존재 여부 반환 (boolean)
+        Repo-->>Facade: 존재 여부 반환
 
         alt 이미 등록된 경우 (좋아요 존재함)
-            Note over Facade: 멱등성 보장: 추가 처리 없이 성공 리턴
-        else 신규 등록인 경우 (좋아요 존재하지 않음)
+            Note over Facade: 멱등성 보장: 성공 리턴
+        else 신규 등록인 경우
             Facade->>Domain: ProductLike 객체 생성
-            Domain-->>Facade: ProductLike 엔티티
             Facade->>Repo: 좋아요 데이터 저장 (INSERT)
-            
-            Facade->>Domain: Product.increaseLikeCount()
-            Facade->>Repo: 상품 테이블 갱신 (UPDATE)
-            Repo-->>Facade: 갱신 완료
+            Facade->>EventPublisher: 좋아요 추가 이벤트 발행 (LikeCreatedEvent)
         end
         Note right of Facade: [@Transactional Commit]
     end
 
     Facade-->>Controller: 성공 반환
     deactivate Facade
-
+    
     Controller-->>User: 200 OK
     deactivate Controller
+
+    %% 비동기 이벤트 처리 (좋아요 집계)
+    participant EventListener as LikeEventListener (Async)
+    EventPublisher-)EventListener: 트랜잭션 성공 후 이벤트 수신 (AFTER_COMMIT)
+    activate EventListener
+    
+    rect rgba(255, 165, 0, 0.1)
+        Note right of EventListener: [@Transactional Begin (별도 트랜잭션)]
+        EventListener->>Repo: Product 조회 및 비관적 락 획득 (FOR UPDATE)
+        EventListener->>Domain: Product.increaseLikeCount()
+        EventListener->>Repo: 상품 테이블 갱신 (UPDATE)
+        
+        alt 갱신 실패 (DB 장애 등)
+            EventListener->>Repo: 실패한 이벤트 Outbox 테이블에 저장 (INSERT)
+            Note right of EventListener: 추후 스케줄러가 Outbox 재시도
+        end
+        Note right of EventListener: [@Transactional Commit]
+    end
+    deactivate EventListener
 ```
 
 ```mermaid
@@ -247,31 +262,46 @@ sequenceDiagram
     activate Facade
 
     rect rgba(128, 128, 128, 0.2)
-        Note right of Facade: [@Transactional Begin]
+        Note right of Facade: [@Transactional Begin (핵심 로직)]
 
-        Facade->>Repo: 상품 존재 여부 확인 + 비관적 락 획득 (SELECT FOR UPDATE)
-        Repo-->>Facade: Product 엔티티 반환 (없으면 예외)
+        Facade->>Repo: 상품 존재 여부 확인 (락 없음)
+        Repo-->>Facade: Product 엔티티 반환
 
         Facade->>Repo: 좋아요 데이터 존재 여부 조회
         Repo-->>Facade: 존재 여부 반환
 
-        alt 누른 적이 없는 경우 (좋아요 미존재)
-            Note over Facade: 멱등성 보장: 추가 처리 없이 성공 리턴
-        else 기존에 누른 경우 (좋아요 존재함)
+        alt 누른 적이 없는 경우
+            Note over Facade: 멱등성 보장: 성공 리턴
+        else 기존에 누른 경우
             Facade->>Repo: 해당 유저/상품의 좋아요 데이터 삭제 (DELETE)
-            
-            Facade->>Domain: Product.decreaseLikeCount()
-            Facade->>Repo: 상품 테이블 갱신 (UPDATE)
-            Repo-->>Facade: 삭제 및 갱신 완료
+            Facade->>EventPublisher: 좋아요 취소 이벤트 발행 (LikeDeletedEvent)
         end
         Note right of Facade: [@Transactional Commit]
     end
 
     Facade-->>Controller: 성공 반환
     deactivate Facade
-
+    
     Controller-->>User: 200 OK
     deactivate Controller
+
+    %% 비동기 이벤트 처리 (좋아요 집계)
+    participant EventListener as LikeEventListener (Async)
+    EventPublisher-)EventListener: 트랜잭션 성공 후 이벤트 수신 (AFTER_COMMIT)
+    activate EventListener
+    
+    rect rgba(255, 165, 0, 0.1)
+        Note right of EventListener: [@Transactional Begin (별도 트랜잭션)]
+        EventListener->>Repo: Product 조회 및 비관적 락 획득 (FOR UPDATE)
+        EventListener->>Domain: Product.decreaseLikeCount()
+        EventListener->>Repo: 상품 테이블 갱신 (UPDATE)
+        
+        alt 갱신 실패 (DB 장애 등)
+            EventListener->>Repo: 실패한 이벤트 Outbox 테이블에 저장 (INSERT)
+        end
+        Note right of EventListener: [@Transactional Commit]
+    end
+    deactivate EventListener
 ```
 
 ```mermaid
@@ -387,4 +417,68 @@ sequenceDiagram
         Facade->>DB: FAILED / CANCELED 갱신 및 보상 트랜잭션 (재고/쿠폰 복구)
         Note over Facade: 스팸 방지를 위해 일반 타임아웃 알림 미발송
     end
+```
+
+```mermaid
+sequenceDiagram
+    title 주문 결제 완료에 따른 알림 발송 및 보정(Event)
+    participant CallbackAPI as 결제 Callback API
+    participant DB
+    participant EventPublisher
+    participant NotificationListener
+    participant NotificationService as 외부 알림 서비스
+
+    CallbackAPI->>DB: 결제 APPROVED 및 주문 COMPLETED 저장
+    CallbackAPI->>EventPublisher: 결제 완료 이벤트 발행 (PaymentCompletedEvent)
+    Note over CallbackAPI, DB: [@Transactional Commit]
+    
+    EventPublisher-)NotificationListener: 이벤트 수신 (AFTER_COMMIT, @Async)
+    activate NotificationListener
+    NotificationListener->>NotificationService: 푸시/알림톡 발송 요청
+    
+    alt 발송 성공
+        NotificationService-->>NotificationListener: 성공 응답
+    else 발송 실패 (Timeout, 외부 장애 등)
+        NotificationService--xNotificationListener: 실패 예외
+        NotificationListener->>DB: 알림 실패 내역(Outbox) 저장 (INSERT)
+        Note right of NotificationListener: 배치 스케줄러가 주기적으로 실패 내역 재발송
+    end
+    deactivate NotificationListener
+```
+
+```mermaid
+sequenceDiagram
+    title 유저 행동 로깅 플로우 (중요도에 따른 이원화 처리)
+    actor User
+    participant Controller
+    participant Facade
+    participant DB
+    participant EventPublisher
+    participant LogListener as ActionLogListener
+    participant ExternalLog as 외부 로깅 시스템 (Kafka 등)
+
+    User->>Controller: 각종 유저 액션 (조회, 클릭, 주문 시도)
+    Controller->>Facade: 비즈니스 로직 호출
+    Facade->>EventPublisher: 유저 액션 이벤트 발행 (UserActionLogEvent)
+    
+    %% 비동기 로그 처리 (트랜잭션 결과와 무관)
+    EventPublisher-)LogListener: 이벤트 즉시 수신 (@EventListener, @Async)
+    activate LogListener
+    
+    alt 단순 행동 (조회, 클릭 등 - Fire & Forget)
+        LogListener-)ExternalLog: 비동기 로그 전송 (실패 시 무시)
+    else 핵심 행동 (결제 시도, 주문 등 - Outbox 전달 보장)
+        LogListener->>DB: Outbox 로깅 테이블에 기록 (INSERT)
+        Note right of LogListener: 이후 배치 스케줄러나 CDC가 읽어서 <br>외부 로깅 시스템으로 확실하게 전달
+    end
+    deactivate LogListener
+    
+    Facade->>DB: 실제 비즈니스 로직 수행 (예: 주문 처리)
+    alt 비즈니스 로직 성공
+        DB-->>Facade: 성공
+    else 비즈니스 로직 실패 (예: 재고 부족)
+        DB--xFacade: 예외 발생 (Rollback)
+        Note over DB, Facade: 비즈니스가 롤백되어도 <br>이미 비동기로 전송/저장된 로그는 남아 "시도"를 기록함
+    end
+    Facade-->>Controller: 응답
 ```
