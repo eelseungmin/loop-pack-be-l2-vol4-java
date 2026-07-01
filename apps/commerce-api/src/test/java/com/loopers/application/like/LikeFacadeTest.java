@@ -1,6 +1,9 @@
 package com.loopers.application.like;
 
 import com.loopers.application.product.ProductRepository;
+import com.loopers.domain.event.EventPublisher;
+import com.loopers.domain.like.LikeCreatedEvent;
+import com.loopers.domain.like.LikeDeletedEvent;
 import com.loopers.domain.like.ProductLikeModel;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.support.error.CoreException;
@@ -32,6 +35,9 @@ class LikeFacadeTest {
     @Mock
     private ProductRepository productRepository;
 
+    @Mock
+    private EventPublisher eventPublisher;
+
     @Test
     @DisplayName("좋아요를 처음 등록하면 상품 존재 여부를 검증하고 이력이 추가된다.")
     void addLike_NewLike_ShouldAddRecord() {
@@ -49,7 +55,8 @@ class LikeFacadeTest {
         verify(productRepository).findByIdWithLock(productId);
         verify(likeRepository).findByUserIdAndProductId(userId, productId);
         verify(likeRepository).save(any(ProductLikeModel.class));
-        assertThat(product.getLikeCount()).isEqualTo(1);
+        verify(eventPublisher).publish(any(LikeCreatedEvent.class));
+        assertThat(product.getLikeCount()).isEqualTo(0); // decoupled
     }
 
     @Test
@@ -70,6 +77,7 @@ class LikeFacadeTest {
         verify(productRepository).findByIdWithLock(productId);
         verify(likeRepository).findByUserIdAndProductId(userId, productId);
         verify(likeRepository, never()).save(any(ProductLikeModel.class));
+        verify(eventPublisher, never()).publish(any(LikeCreatedEvent.class));
         assertThat(product.getLikeCount()).isEqualTo(0);
     }
 
@@ -92,7 +100,8 @@ class LikeFacadeTest {
         verify(productRepository).findByIdWithLock(productId);
         verify(likeRepository).findByUserIdAndProductId(userId, productId);
         verify(likeRepository).delete(existingLike);
-        assertThat(product.getLikeCount()).isEqualTo(0);
+        verify(eventPublisher).publish(any(LikeDeletedEvent.class));
+        assertThat(product.getLikeCount()).isEqualTo(1); // decoupled: count was initialized as 1, was not decreased synchronously
     }
 
     @Test
@@ -112,6 +121,7 @@ class LikeFacadeTest {
         verify(productRepository).findByIdWithLock(productId);
         verify(likeRepository).findByUserIdAndProductId(userId, productId);
         verify(likeRepository, never()).delete(any(ProductLikeModel.class));
+        verify(eventPublisher, never()).publish(any(LikeDeletedEvent.class));
         assertThat(product.getLikeCount()).isEqualTo(0);
     }
 }
