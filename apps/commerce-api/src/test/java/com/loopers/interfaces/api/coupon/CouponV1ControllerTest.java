@@ -30,18 +30,21 @@ class CouponV1ControllerTest {
     private CouponFacade couponFacade;
 
     @Test
-    @DisplayName("쿠폰 발급 요청 시 200 OK를 반환하고 Facade를 호출한다.")
-    void issueCoupon_ShouldReturnOk() throws Exception {
+    @DisplayName("쿠폰 발급 요청 시 202 Accepted를 반환하고 Facade를 비동기로 호출한다.")
+    void issueCoupon_ShouldReturnAccepted() throws Exception {
         // given
         Long userId = 1L;
         Long couponId = 10L;
+        String mockRequestId = "test-req-uuid";
+        given(couponFacade.issueCouponAsync(userId, couponId)).willReturn(mockRequestId);
 
         // when & then
         mockMvc.perform(post("/api/v1/coupons/{couponId}/issue", couponId)
                         .header("X-Loopers-UserId", userId))
-                .andExpect(status().isOk());
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.requestId").value(mockRequestId));
 
-        verify(couponFacade).issueCoupon(userId, couponId);
+        verify(couponFacade).issueCouponAsync(userId, couponId);
     }
 
     @Test

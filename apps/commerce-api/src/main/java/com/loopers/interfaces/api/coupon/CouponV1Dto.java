@@ -21,4 +21,8 @@ public class CouponV1Dto {
             String requestId,
             com.loopers.domain.coupon.CouponRequestStatus status
     ) {}
+
+    public record CouponIssueResponse(
+            String requestId
+    ) {}
 }

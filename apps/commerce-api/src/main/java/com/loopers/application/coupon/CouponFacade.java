@@ -14,6 +14,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.UUID;
 
 @Component
 @RequiredArgsConstructor
@@ -21,6 +22,8 @@ public class CouponFacade {
 
     private final CouponRepository couponRepository;
     private final CouponRequestRepository couponRequestRepository;
+    private final CouponIssueValidator couponIssueValidator;
+    private final CouponEventPublisher couponEventPublisher;
 
     @Transactional
     public CouponIssue issueCoupon(Long userId, Long couponTemplateId) {
@@ -64,5 +67,19 @@ public class CouponFacade {
     public CouponRequestStatus getRequestStatus(String requestId) {
         return couponRequestRepository.findStatus(requestId)
                 .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "조회할 수 없는 요청ID입니다."));
+    }
+
+    public String issueCouponAsync(Long userId, Long couponTemplateId) {
+        CouponTemplate template = couponRepository.findTemplateById(couponTemplateId)
+                .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "조회할 수 없는 쿠폰템플릿입니다."));
+
+        couponIssueValidator.validateIssueRequest(userId, couponTemplateId, template.getTotalQuantity());
+
+        String requestId = UUID.randomUUID().toString();
+        couponRequestRepository.saveStatus(requestId, CouponRequestStatus.IN_PROGRESS);
+
+        couponEventPublisher.publishIssueRequest(requestId, userId, couponTemplateId);
+
+        return requestId;
     }
 }

@@ -138,4 +138,30 @@ class CouponFacadeTest {
         com.loopers.domain.coupon.CouponRequestStatus found = couponRequestRepository.findStatus(requestId).orElseThrow();
         assertThat(found).isEqualTo(com.loopers.domain.coupon.CouponRequestStatus.IN_PROGRESS);
     }
+
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private CouponEventPublisher couponEventPublisher;
+
+    @Test
+    @DisplayName("비동기 쿠폰 발급 요청 시, 1차 검증을 거쳐 상태를 IN_PROGRESS로 적재하고 Kafka 이벤트를 발행한다.")
+    void issueCouponAsync_ShouldSaveStatusAndPublishEvent() {
+        // given
+        Long userId = 2L;
+        CouponTemplate template = couponRepository.saveTemplate(
+            new CouponTemplate("선착순 100명 쿠폰", CouponType.FIXED, new BigDecimal("5000"), BigDecimal.ZERO, null, LocalDateTime.now().plusDays(10), 100, 0)
+        );
+
+        // when
+        String requestId = couponFacade.issueCouponAsync(userId, template.getId());
+
+        // then
+        assertThat(requestId).isNotNull();
+
+        // 1. Redis에 상태가 IN_PROGRESS로 저장되었는지 확인
+        com.loopers.domain.coupon.CouponRequestStatus status = couponRequestRepository.findStatus(requestId).orElseThrow();
+        assertThat(status).isEqualTo(com.loopers.domain.coupon.CouponRequestStatus.IN_PROGRESS);
+
+        // 2. Kafka 이벤트 발행이 정상적으로 호출되었는지 확인
+        org.mockito.Mockito.verify(couponEventPublisher).publishIssueRequest(requestId, userId, template.getId());
+    }
 }
