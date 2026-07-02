@@ -1,5 +1,6 @@
-package com.loopers.application.payment;
+package com.loopers.infrastructure.outbox;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.loopers.application.outbox.OutboxEventRepository;
 import com.loopers.domain.event.EventPublisher;
 import com.loopers.domain.outbox.EventType;
@@ -11,10 +12,10 @@ import com.loopers.utils.DatabaseCleanUp;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.boot.test.mock.mockito.MockBean;
+import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.ContextConfiguration;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -22,24 +23,25 @@ import java.math.BigDecimal;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.doThrow;
-import static org.mockito.Mockito.verify;
 
 @SpringBootTest
 @ContextConfiguration(initializers = RedisTestContainersConfig.class)
-class PaymentNotificationEventListenerTest {
+class PaymentCompletedOutboxListenerTest {
 
     @Autowired
     private EventPublisher eventPublisher;
-
-    @SpyBean
-    private NotificationService notificationService;
 
     @Autowired
     private OutboxEventRepository outboxEventRepository;
 
     @Autowired
     private TransactionTemplate transactionTemplate;
+
+    @MockBean
+    private KafkaTemplate<Object, Object> kafkaTemplate;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Autowired
     private DatabaseCleanUp databaseCleanUp;
@@ -50,8 +52,8 @@ class PaymentNotificationEventListenerTest {
     }
 
     @Test
-    @DisplayName("결제 완료 이벤트를 받으면 유저에게 알림톡을 성공적으로 발송한다.")
-    void handlePaymentCompleted_Success() throws InterruptedException {
+    @DisplayName("결제 완료 이벤트 발생 시 동일 트랜잭션 내에 OutboxEvent가 INIT 상태로 저장된다.")
+    void saveOutboxEvent_ShouldSaveInitStatusInSameTransaction() {
         // given
         PaymentCompletedEvent event = new PaymentCompletedEvent(1L, 2L, 3L, new BigDecimal("1000"));
 
@@ -59,27 +61,6 @@ class PaymentNotificationEventListenerTest {
         transactionTemplate.executeWithoutResult(status -> {
             eventPublisher.publish(event);
         });
-
-        Thread.sleep(500);
-
-        // then
-        verify(notificationService).sendPaymentSuccess(3L, 1L);
-    }
-
-    @Test
-    @DisplayName("알림톡 발송 실패 시 Outbox 테이블에 PAYMENT_COMPLETED 타입의 INIT 상태 이벤트가 저장된다.")
-    void handlePaymentCompleted_Failure_ShouldSaveToOutbox() throws InterruptedException {
-        // given
-        PaymentCompletedEvent event = new PaymentCompletedEvent(1L, 2L, 3L, new BigDecimal("1000"));
-        doThrow(new RuntimeException("Notification service timeout"))
-                .when(notificationService).sendPaymentSuccess(Mockito.anyLong(), Mockito.anyLong());
-
-        // when
-        transactionTemplate.executeWithoutResult(status -> {
-            eventPublisher.publish(event);
-        });
-
-        Thread.sleep(500);
 
         // then
         List<OutboxEvent> outboxEvents = outboxEventRepository.findAllByStatus(OutboxEventStatus.INIT);

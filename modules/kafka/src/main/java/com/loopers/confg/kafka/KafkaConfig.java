@@ -32,6 +32,8 @@ public class KafkaConfig {
     @Bean
     public ProducerFactory<Object, Object> producerFactory(KafkaProperties kafkaProperties) {
         Map<String, Object> props = new HashMap<>(kafkaProperties.buildProducerProperties());
+        props.put(org.apache.kafka.clients.producer.ProducerConfig.ACKS_CONFIG, "all");
+        props.put(org.apache.kafka.clients.producer.ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         return new DefaultKafkaProducerFactory<>(props);
     }
 

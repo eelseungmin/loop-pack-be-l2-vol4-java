@@ -20,17 +20,23 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.mock.mockito.SpyBean;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.test.context.ContextConfiguration;
+import org.springframework.test.context.TestPropertySource;
 
 import java.math.BigDecimal;
 import java.util.List;
 
+import org.springframework.kafka.core.KafkaTemplate;
+import java.util.concurrent.CompletableFuture;
+
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.verify;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 
 @SpringBootTest
 @ContextConfiguration(initializers = RedisTestContainersConfig.class)
+@TestPropertySource(properties = "scheduling.enabled=true")
 class OutboxSchedulerTest {
 
     @Autowired
@@ -39,14 +45,8 @@ class OutboxSchedulerTest {
     @Autowired
     private OutboxEventRepository outboxEventRepository;
 
-    @Autowired
-    private ProductRepository productRepository;
-
-    @Autowired
-    private BrandRepository brandRepository;
-
-    @SpyBean
-    private NotificationService notificationService;
+    @MockBean
+    private KafkaTemplate<Object, Object> kafkaTemplate;
 
     @Autowired
     private ObjectMapper objectMapper;
@@ -60,35 +60,25 @@ class OutboxSchedulerTest {
     }
 
     @Test
-    @DisplayName("Outbox 테이블의 INIT 상태 이벤트들을 스케줄러가 재처리하여 완료 상태로 업데이트하고 비즈니스 로직을 보정한다.")
-    void run_ShouldProcessInitEvents() throws Exception {
-        // given: 1. 좋아요 집계 실패 이벤트 준비
-        BrandModel brand = brandRepository.save(new BrandModel("Nike"));
-        ProductModel product = productRepository.save(new ProductModel(brand.getId(), "Air Max", new BigDecimal("1000")));
-        
-        LikeCreatedEvent likeEvent = new LikeCreatedEvent(1L, product.getId());
-        String likePayload = objectMapper.writeValueAsString(likeEvent);
-        OutboxEvent likeOutbox = outboxEventRepository.save(new OutboxEvent(EventType.LIKE_CREATED, likePayload, OutboxEventStatus.INIT));
-
-        // given: 2. 알림톡 실패 이벤트 준비
+    @DisplayName("Outbox 테이블의 INIT 상태 이벤트들을 스케줄러가 카프카로 발송하고 완료 상태로 업데이트한다.")
+    void run_ShouldSendInitEventsToKafka() throws Exception {
+        // given
         PaymentCompletedEvent paymentEvent = new PaymentCompletedEvent(10L, 20L, 30L, new BigDecimal("5000"));
         String paymentPayload = objectMapper.writeValueAsString(paymentEvent);
         OutboxEvent paymentOutbox = outboxEventRepository.save(new OutboxEvent(EventType.PAYMENT_COMPLETED, paymentPayload, OutboxEventStatus.INIT));
 
+        Mockito.doReturn(CompletableFuture.completedFuture(null))
+                .when(kafkaTemplate).send(anyString(), anyString(), anyString());
+
         // when
         outboxScheduler.run();
 
-        // then: 1. 좋아요 집계 보정 결과 검증 (likeCount 증가)
-        ProductModel updatedProduct = productRepository.findById(product.getId()).orElseThrow();
-        assertThat(updatedProduct.getLikeCount()).isEqualTo(1);
+        // then: 카프카로 전송됨
+        Mockito.verify(kafkaTemplate, Mockito.times(1))
+                .send(eq("PAYMENT_COMPLETED"), eq(paymentOutbox.getId().toString()), eq(paymentPayload));
 
-        // then: 2. 알림톡 재발송 검증
-        verify(notificationService).sendPaymentSuccess(30L, 10L);
-
-        // then: 3. Outbox 상태 COMPLETED로 변경 검증
-        OutboxEvent processedLike = outboxEventRepository.findById(likeOutbox.getId()).orElseThrow();
+        // then: Outbox 상태 COMPLETED로 변경 검증
         OutboxEvent processedPayment = outboxEventRepository.findById(paymentOutbox.getId()).orElseThrow();
-        assertThat(processedLike.getStatus()).isEqualTo(OutboxEventStatus.COMPLETED);
         assertThat(processedPayment.getStatus()).isEqualTo(OutboxEventStatus.COMPLETED);
     }
 }

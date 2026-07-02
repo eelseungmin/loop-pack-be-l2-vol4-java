@@ -15,4 +15,10 @@ public class PaymentV1Dto {
     public record PaymentResponse(
         Long paymentId
     ) {}
+
+    public record PaymentCallbackRequest(
+        Long paymentId,
+        String status,
+        String transactionId
+    ) {}
 }

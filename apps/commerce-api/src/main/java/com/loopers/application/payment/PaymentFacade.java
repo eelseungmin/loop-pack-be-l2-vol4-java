@@ -10,6 +10,7 @@ import com.loopers.domain.payment.PaymentGateway;
 import com.loopers.domain.payment.PaymentGateway.PaymentGatewayResult;
 import com.loopers.domain.payment.PaymentStatus;
 import com.loopers.domain.payment.PaymentCompletedEvent;
+import com.loopers.domain.payment.PaymentFailedEvent;
 import com.loopers.support.error.CoreException;
 import com.loopers.support.error.ErrorType;
 import lombok.RequiredArgsConstructor;
@@ -32,11 +33,10 @@ public class PaymentFacade {
     private final PaymentGateway paymentGateway;
     private final PaymentTempStorage paymentTempStorage;
     private final OrderRepository orderRepository;
-    private final ProductFacade productFacade;
-    private final CouponRepository couponRepository;
     private final NotificationService notificationService;
     private final io.github.resilience4j.circuitbreaker.CircuitBreaker pgCircuitBreaker;
     private final EventPublisher eventPublisher;
+    private final org.springframework.transaction.support.TransactionTemplate transactionTemplate;
 
     public PaymentStatus getPaymentStatus(Long paymentId) {
         return paymentRepository.findById(paymentId)
@@ -97,21 +97,49 @@ public class PaymentFacade {
         return paymentId;
     }
 
-    @Transactional
     public void retryOrCompensatePayment(Long paymentId) {
         retryOrCompensatePayment(paymentId, false);
     }
 
-    @Transactional
     public void retryOrCompensatePayment(Long paymentId, boolean isFallback) {
+        PaymentModel initial = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "결제 내역을 찾을 수 없습니다."));
+
+        if (initial.getStatus() != PaymentStatus.READY) {
+            return;
+        }
+        Long orderId = initial.getOrderId();
+
+        boolean locked = paymentTempStorage.lockOrder(orderId);
+        if (!locked) {
+            log.warn("Failed to acquire lock for payment: {}", paymentId);
+            return;
+        }
+
+        try {
+            PaymentModel check = paymentRepository.findById(paymentId)
+                    .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "결제 내역을 찾을 수 없습니다."));
+            if (check.getStatus() != PaymentStatus.READY) {
+                return;
+            }
+
+            PaymentGateway.PaymentGatewayQueryResult queryResult = paymentGateway.queryPaymentStatus(orderId);
+
+            transactionTemplate.executeWithoutResult(status -> {
+                executeRetryOrCompensateLogic(paymentId, isFallback, queryResult);
+            });
+        } finally {
+            paymentTempStorage.unlockOrder(orderId);
+        }
+    }
+
+    private void executeRetryOrCompensateLogic(Long paymentId, boolean isFallback, PaymentGateway.PaymentGatewayQueryResult queryResult) {
         PaymentModel payment = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "결제 내역을 찾을 수 없습니다."));
 
         if (payment.getStatus() != PaymentStatus.READY) {
             return;
         }
-
-        PaymentGateway.PaymentGatewayQueryResult queryResult = paymentGateway.queryPaymentStatus(payment.getOrderId());
 
         if (!isFallback && queryResult.status() == com.loopers.domain.payment.PaymentGatewayStatus.APPROVED) {
             payment.approve(queryResult.transactionId(), queryResult.approvedAt());
@@ -159,21 +187,8 @@ public class PaymentFacade {
                 order.cancel();
                 orderRepository.save(order);
 
-                // 1. 재고 복구 (롤백)
-                if (order.getItems() != null && !order.getItems().isEmpty()) {
-                    java.util.List<com.loopers.application.product.ProductFacade.StockRequest> stockRequests = order.getItems().stream()
-                            .map(item -> new com.loopers.application.product.ProductFacade.StockRequest(item.getProductId(), item.getQuantity()))
-                            .toList();
-                    productFacade.increaseStocks(stockRequests);
-                }
-
-                // 2. 쿠폰 복구 (롤백)
-                if (order.getCouponIssueId() != null) {
-                    com.loopers.domain.coupon.CouponIssue couponIssue = couponRepository.findIssueById(order.getCouponIssueId())
-                            .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "쿠폰 발급 내역을 찾을 수 없습니다."));
-                    couponIssue.restore();
-                    couponRepository.saveIssue(couponIssue);
-                }
+                // 보상 처리를 위한 비동기 이벤트(Outbox) 발행
+                eventPublisher.publish(new PaymentFailedEvent(paymentId, payment.getOrderId(), order.getUserId(), payment.getAmount()));
 
                 // 3. 알림 서비스 호출 (Fallback 스케줄러 보정이 아닐 때만 발송)
                 if (!isFallback) {
@@ -186,6 +201,47 @@ public class PaymentFacade {
 
                 paymentTempStorage.deleteRetryKey(paymentId);
             }
+        }
+    }
+
+    public void completePayment(Long paymentId) {
+        PaymentModel initial = paymentRepository.findById(paymentId)
+                .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "결제 내역을 찾을 수 없습니다."));
+
+        if (initial.getStatus() != PaymentStatus.READY) {
+            return;
+        }
+        Long orderId = initial.getOrderId();
+
+        boolean locked = paymentTempStorage.lockOrder(orderId);
+        if (!locked) {
+            log.warn("Failed to acquire lock for payment: {}", paymentId);
+            return;
+        }
+
+        try {
+            transactionTemplate.executeWithoutResult(status -> {
+                PaymentModel payment = paymentRepository.findById(paymentId)
+                        .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "결제 내역을 찾을 수 없습니다."));
+
+                if (payment.getStatus() != PaymentStatus.READY) {
+                    return;
+                }
+
+                payment.approve("tx-callback", java.time.LocalDateTime.now());
+                paymentRepository.save(payment);
+
+                com.loopers.domain.order.OrderModel order = orderRepository.findById(payment.getOrderId())
+                        .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "주문 내역을 찾을 수 없습니다."));
+                order.complete();
+                orderRepository.save(order);
+
+                paymentTempStorage.deleteRetryKey(paymentId);
+
+                eventPublisher.publish(new PaymentCompletedEvent(paymentId, payment.getOrderId(), order.getUserId(), payment.getAmount()));
+            });
+        } finally {
+            paymentTempStorage.unlockOrder(orderId);
         }
     }
 }
