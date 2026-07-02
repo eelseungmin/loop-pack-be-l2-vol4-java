@@ -94,4 +94,30 @@ class CouponFacadeTest {
         assertThat(saved.getUserId()).isEqualTo(userId);
         assertThat(saved.getCouponTemplateId()).isEqualTo(template.getId());
     }
+
+    @Test
+    @DisplayName("쿠폰 템플릿에 총 수량과 발급 수량 필드가 정상적으로 저장되고 조회된다.")
+    void saveAndFindTemplate_WithQuantityFields() {
+        // given
+        CouponTemplate template = new CouponTemplate(
+            "선착순 100명 쿠폰", 
+            CouponType.FIXED, 
+            new BigDecimal("5000"), 
+            BigDecimal.ZERO, 
+            null, 
+            LocalDateTime.now().plusDays(10),
+            100, // totalQuantity
+            0 // issuedQuantity
+        );
+
+        // when
+        CouponTemplate saved = couponRepository.saveTemplate(template);
+
+        // then
+        assertThat(saved.getId()).isNotNull();
+        
+        CouponTemplate found = couponRepository.findTemplateById(saved.getId()).orElseThrow();
+        assertThat(found.getTotalQuantity()).isEqualTo(100);
+        assertThat(found.getIssuedQuantity()).isEqualTo(0);
+    }
 }
