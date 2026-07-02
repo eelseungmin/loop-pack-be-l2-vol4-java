@@ -30,4 +30,12 @@ public class CouponV1Controller {
         List<CouponV1Dto.UserCouponResponse> responses = couponFacade.getUsersCoupons(userId);
         return ApiResponse.success(responses);
     }
+
+    @GetMapping("/coupons/requests/{requestId}")
+    public ApiResponse<CouponV1Dto.CouponRequestStatusResponse> getCouponRequestStatus(
+            @PathVariable("requestId") String requestId
+    ) {
+        com.loopers.domain.coupon.CouponRequestStatus status = couponFacade.getRequestStatus(requestId);
+        return ApiResponse.success(new CouponV1Dto.CouponRequestStatusResponse(requestId, status));
+    }
 }

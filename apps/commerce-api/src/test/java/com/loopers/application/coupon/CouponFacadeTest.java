@@ -120,4 +120,22 @@ class CouponFacadeTest {
         assertThat(found.getTotalQuantity()).isEqualTo(100);
         assertThat(found.getIssuedQuantity()).isEqualTo(0);
     }
+
+    @Autowired(required = false)
+    private CouponRequestRepository couponRequestRepository;
+
+    @Test
+    @DisplayName("요청 ID로 발급 상태를 저장하고 정상적으로 조회할 수 있다.")
+    void saveAndFindRequestStatus_ShouldSucceed() {
+        // given
+        String requestId = "test-req-999";
+        com.loopers.domain.coupon.CouponRequestStatus status = com.loopers.domain.coupon.CouponRequestStatus.IN_PROGRESS;
+
+        // when
+        couponRequestRepository.saveStatus(requestId, status);
+
+        // then
+        com.loopers.domain.coupon.CouponRequestStatus found = couponRequestRepository.findStatus(requestId).orElseThrow();
+        assertThat(found).isEqualTo(com.loopers.domain.coupon.CouponRequestStatus.IN_PROGRESS);
+    }
 }

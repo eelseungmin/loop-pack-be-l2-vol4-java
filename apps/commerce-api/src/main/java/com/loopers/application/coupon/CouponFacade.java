@@ -7,6 +7,7 @@ import com.loopers.domain.coupon.UserCouponInfo;
 import com.loopers.support.error.CoreException;
 import com.loopers.support.error.ErrorType;
 import com.loopers.interfaces.api.coupon.CouponV1Dto.UserCouponResponse;
+import com.loopers.domain.coupon.CouponRequestStatus;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
@@ -19,6 +20,7 @@ import java.util.List;
 public class CouponFacade {
 
     private final CouponRepository couponRepository;
+    private final CouponRequestRepository couponRequestRepository;
 
     @Transactional
     public CouponIssue issueCoupon(Long userId, Long couponTemplateId) {
@@ -57,5 +59,10 @@ public class CouponFacade {
                         info.expiredAt()
                 ))
                 .toList();
+    }
+
+    public CouponRequestStatus getRequestStatus(String requestId) {
+        return couponRequestRepository.findStatus(requestId)
+                .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "조회할 수 없는 요청ID입니다."));
     }
 }

@@ -66,4 +66,20 @@ class CouponV1ControllerTest {
 
         verify(couponFacade).getUsersCoupons(userId);
     }
+
+    @Test
+    @DisplayName("쿠폰 발급 요청 상태 조회 시 200 OK와 상태를 반환한다.")
+    void getCouponRequestStatus_ShouldReturnOkAndStatus() throws Exception {
+        // given
+        String requestId = "test-req-123";
+        given(couponFacade.getRequestStatus(requestId)).willReturn(com.loopers.domain.coupon.CouponRequestStatus.IN_PROGRESS);
+
+        // when & then
+        mockMvc.perform(get("/api/v1/coupons/requests/{requestId}", requestId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.requestId").value(requestId))
+                .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"));
+
+        verify(couponFacade).getRequestStatus(requestId);
+    }
 }
