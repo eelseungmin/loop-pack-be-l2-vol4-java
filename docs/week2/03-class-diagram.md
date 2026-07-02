@@ -33,9 +33,6 @@ classDiagram
         +Long brandId
         +String name
         +BigDecimal price
-        +int likeCount
-        +increaseLikeCount()
-        +decreaseLikeCount()
     }
     Product --|> BaseSoftDeleteEntity
     
@@ -109,12 +106,39 @@ classDiagram
         +Long id
         +Long orderId
         +PaymentMethod method "CARD, TRANSFER"
-        +PaymentStatus status "READY, APPROVED, FAILED"
+        +PaymentStatus status "READY, APPROVED, FAILED, REFUNDED"
         +BigDecimal amount
         +String transactionId
         +LocalDateTime approvedAt
     }
     Payment --|> BaseTimeEntity
+    
+    class OutboxEvent {
+        +Long id
+        +String aggregateType
+        +Long aggregateId
+        +String eventType
+        +String payload
+        +OutboxStatus status "INIT, PUBLISHED"
+        +markAsPublished()
+    }
+    OutboxEvent --|> BaseTimeEntity
+
+    class ProductMetrics {
+        +Long productId
+        +int totalLikes
+        +int totalSales
+        +int totalViews
+        +addLikes(int amount)
+        +addSales(int amount)
+    }
+    ProductMetrics --|> BaseTimeEntity
+    
+    class EventHandled {
+        +String eventId
+        +String eventType
+        +LocalDateTime handledAt
+    }
 
     class PaymentMethod {
         <<enumeration>>
@@ -127,6 +151,7 @@ classDiagram
         READY
         APPROVED
         FAILED
+        REFUNDED
     }
 
     class PaymentGateway {
@@ -141,11 +166,14 @@ classDiagram
         +LocalDateTime approvedAt
     }
 
-    class NotificationService {
-        <<interface>>
-        +sendPaymentTimeout(userId, paymentId)
-        +sendPaymentRefund(userId, paymentId)
+    class NotificationKafkaConsumer {
+        +consumePaymentEvent(ConsumerRecord)
     }
+    class ExternalPushService {
+        <<interface>>
+        +sendPush(userId, message)
+    }
+    NotificationKafkaConsumer ..> ExternalPushService
 
     class PaymentFallbackScheduler {
         +run()
@@ -192,8 +220,8 @@ classDiagram
         +handleCallback(paymentId, status)
         +retryOrCompensatePayment(paymentId)
     }
-    class PaymentExpirationListener {
-        +onMessage(message, pattern)
+    class PaymentRetryWorker {
+        +executeRetry(paymentId, retryCount)
     }
     class BrandAdminFacade {
         +deleteBrand(brandId)
@@ -228,11 +256,9 @@ classDiagram
     PaymentFacade ..> OrderRepository
     PaymentFacade ..> PaymentGateway
     PaymentFacade ..> StockRepository
-    PaymentFacade ..> CouponRepository
-    PaymentFacade ..> NotificationService
     PaymentFacade ..> IdempotencyManager
     
-    PaymentExpirationListener ..> PaymentFacade
+    PaymentRetryWorker ..> PaymentFacade
     PaymentFallbackScheduler ..> PaymentFacade
     
     BrandAdminFacade ..> ProductRepository
@@ -243,4 +269,23 @@ classDiagram
     CouponFacade ..> CouponRepository
 
     ProductFacade ..> ProductRepository
+
+    %% Kafka 이벤트 퍼블리셔/컨슈머 계층
+    class OutboxRelayScheduler {
+        +publishPendingEvents()
+    }
+    class KafkaEventProducer {
+        <<interface>>
+        +send(topic, partitionKey, payload)
+    }
+    class MetricsKafkaConsumer {
+        +consumeMetricsEvent(ConsumerRecord)
+    }
+    class MetricsUpdateService {
+        <<DomainService>>
+        +addMetrics(eventId, payload)
+    }
+    
+    OutboxRelayScheduler ..> KafkaEventProducer
+    MetricsKafkaConsumer ..> MetricsUpdateService
 ```

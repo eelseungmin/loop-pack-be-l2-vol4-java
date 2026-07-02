@@ -26,7 +26,7 @@ sequenceDiagram
         User->>PaymentAPI: 2. 결제 요청 (orderId, cardNo)
         PaymentAPI->>Facade: processPayment()
         Facade->>DB: 결제 READY 저장
-        Facade->>Redis: TTL 10초 Key 생성 (payment_retry, count=0)
+        Facade->>Facade: 인메모리 스케줄러 10초 뒤 실행 등록
     end
     
     Note over Facade, PG: DB 락 없이 외부 API 비동기 대기
@@ -124,44 +124,69 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    title 비동기 콜백 처리 및 보상 트랜잭션
-    participant PG as PG Simulator
-    participant CallbackAPI as POST /callback
+    title 비동기 콜백 처리 및 보상 트랜잭션 분리 (Outbox 활용)
+    actor PG as PG Simulator
+    participant API as Callback API
+    participant Lock as Redisson
     participant Facade as Facade
-    participant DB
+    participant DB as Commerce DB
+    participant Outbox as OUTBOX_EVENTS
+    participant Scheduler as Outbox 스케줄러
 
-    PG->>CallbackAPI: 3. 결제 결과 콜백 (상태, 금액 등 포함)
-    CallbackAPI->>Facade: handleCallback(callbackData)
+    PG->>API: 3. 결제 결과 콜백 (상태, 금액 등 포함)
+    activate API
 
-    rect rgba(255, 0, 0, 0.1)
-        Note over Facade, DB: 트랜잭션 3: 결과 반영 및 보상 트랜잭션 (단기)
-        alt 콜백 결제 성공 시
-            Facade->>DB: 결제 APPROVED, 주문 COMPLETED
-        else 콜백 결제 실패 시
-            Facade->>DB: 결제 FAILED, 주문 CANCELED
-            Note right of Facade: 보상 트랜잭션 실행
-            Facade->>DB: 재고 복구, 쿠폰 원복
+    API->>Lock: tryLock("payment:lock:{orderId}")
+    Note right of API: 10초 TTL 보정 스케줄러와의<br>Race Condition 원천 차단
+    
+    API->>Facade: handleCallback(callbackData)
+    Facade->>DB: 결제 내역 선조회
+    
+    alt 이미 처리된 결제 (APPROVED / FAILED / REFUNDED)
+        Facade-->>API: 멱등성 방어 (무시)
+        API-->>PG: 200 OK
+    else 대기 중인 결제 (READY)
+        rect rgba(0, 128, 0, 0.1)
+            Note over Facade, Outbox: 본 트랜잭션: 상태 확정 및 보상 이벤트 적재
+            alt 콜백 결제 성공 시
+                Facade->>DB: 결제 APPROVED, 주문 COMPLETED 갱신
+            else 콜백 결제 실패 시
+                Facade->>DB: 결제 FAILED, 주문 CANCELED 갱신
+                Facade->>Outbox: "재고/쿠폰 복구 이벤트" INSERT (상태: INIT)
+            end
+        end
+        API->>Lock: unlock()
+        API-->>PG: 200 OK
+    end
+    deactivate API
+
+    rect rgba(255, 165, 0, 0.1)
+        Note over Scheduler, DB: 비동기 보상 처리 (재시도 보장)
+        loop 주기적 실행
+            Scheduler->>Outbox: INIT 상태의 "복구 이벤트" 폴링
+            Scheduler->>DB: 상품 재고 복구 및 쿠폰 원복
+            Scheduler->>Outbox: 이벤트 상태 PUBLISHED로 변경
         end
     end
 ```
 
 ```mermaid
 sequenceDiagram
-    title 결제 지연 보정 및 Retry (연쇄 Redis TTL)
+    title 결제 지연 보정 및 Retry (인메모리 스케줄러)
     actor User
-    participant Redis
-    participant Listener as PaymentExpirationListener
+    participant Scheduler as InMemoryScheduler
+    participant Worker as RetryWorker
     participant Facade as Facade
     participant PG as PG Simulator
     participant DB
 
-    Note over Redis, Listener: 10초 뒤 TTL 만료 시 이벤트 발생
-    Redis->>Listener: KeyExpiredEvent (payment_retry:{id})
-    Listener->>Facade: retryOrCompensatePayment(paymentId)
+    Note over Scheduler, Worker: 10초 뒤 스케줄러에 의해 작업 실행
+    Scheduler->>Worker: 10초 딜레이 만료
+    Worker->>Facade: retryOrCompensatePayment(paymentId)
 
     Facade->>DB: 결제 상태 조회
     alt 상태가 READY가 아님 (이미 처리됨)
-        Facade-->>Listener: 무시 (종료)
+        Facade-->>Worker: 무시 (종료)
     else 상태가 READY임
         Facade->>PG: GET /payments/{paymentId} (상태 조회)
         PG-->>Facade: 실제 상태 응답
@@ -172,8 +197,8 @@ sequenceDiagram
             end
         else 미결제 / 응답 없음 (Retry 진행)
             alt 재시도 횟수 < 3
-                Note right of Facade: 아직 3회가 안 됨, TTL 연장
-                Facade->>Redis: TTL 10초 재설정 (count + 1)
+                Note right of Facade: 아직 3회가 안 됨, 스케줄링 연장
+                Facade->>Scheduler: 10초 뒤 작업 재등록 (count + 1)
             else 재시도 횟수 >= 3 (최종 실패)
                 rect rgba(255, 0, 0, 0.1)
                     Note over Facade, DB: 트랜잭션: 최종 실패 및 보상
@@ -217,6 +242,8 @@ sequenceDiagram
             Facade->>Domain: ProductLike 객체 생성
             Facade->>Repo: 좋아요 데이터 저장 (INSERT)
             Facade->>EventPublisher: 좋아요 추가 이벤트 발행 (LikeCreatedEvent)
+            EventPublisher->>OutboxListener: 이벤트 수신 (트랜잭션 내부, 동기)
+            OutboxListener->>Repo: Outbox 이벤트 저장 (INSERT, 상태: INIT)
         end
         Note right of Facade: [@Transactional Commit]
     end
@@ -227,24 +254,7 @@ sequenceDiagram
     Controller-->>User: 200 OK
     deactivate Controller
 
-    %% 비동기 이벤트 처리 (좋아요 집계)
-    participant EventListener as LikeEventListener (Async)
-    EventPublisher-)EventListener: 트랜잭션 성공 후 이벤트 수신 (AFTER_COMMIT)
-    activate EventListener
-    
-    rect rgba(255, 165, 0, 0.1)
-        Note right of EventListener: [@Transactional Begin (별도 트랜잭션)]
-        EventListener->>Repo: Product 조회 및 비관적 락 획득 (FOR UPDATE)
-        EventListener->>Domain: Product.increaseLikeCount()
-        EventListener->>Repo: 상품 테이블 갱신 (UPDATE)
-        
-        alt 갱신 실패 (DB 장애 등)
-            EventListener->>Repo: 실패한 이벤트 Outbox 테이블에 저장 (INSERT)
-            Note right of EventListener: 추후 스케줄러가 Outbox 재시도
-        end
-        Note right of EventListener: [@Transactional Commit]
-    end
-    deactivate EventListener
+    Note over User, Domain: 이후 OutboxRelayScheduler가 주기적으로 INIT 이벤트를 읽어 Kafka로 발행함 (Step 2 참조)
 ```
 
 ```mermaid
@@ -275,6 +285,8 @@ sequenceDiagram
         else 기존에 누른 경우
             Facade->>Repo: 해당 유저/상품의 좋아요 데이터 삭제 (DELETE)
             Facade->>EventPublisher: 좋아요 취소 이벤트 발행 (LikeDeletedEvent)
+            EventPublisher->>OutboxListener: 이벤트 수신 (트랜잭션 내부, 동기)
+            OutboxListener->>Repo: Outbox 이벤트 저장 (INSERT, 상태: INIT)
         end
         Note right of Facade: [@Transactional Commit]
     end
@@ -285,23 +297,7 @@ sequenceDiagram
     Controller-->>User: 200 OK
     deactivate Controller
 
-    %% 비동기 이벤트 처리 (좋아요 집계)
-    participant EventListener as LikeEventListener (Async)
-    EventPublisher-)EventListener: 트랜잭션 성공 후 이벤트 수신 (AFTER_COMMIT)
-    activate EventListener
-    
-    rect rgba(255, 165, 0, 0.1)
-        Note right of EventListener: [@Transactional Begin (별도 트랜잭션)]
-        EventListener->>Repo: Product 조회 및 비관적 락 획득 (FOR UPDATE)
-        EventListener->>Domain: Product.decreaseLikeCount()
-        EventListener->>Repo: 상품 테이블 갱신 (UPDATE)
-        
-        alt 갱신 실패 (DB 장애 등)
-            EventListener->>Repo: 실패한 이벤트 Outbox 테이블에 저장 (INSERT)
-        end
-        Note right of EventListener: [@Transactional Commit]
-    end
-    deactivate EventListener
+    Note over User, Repo: 이후 OutboxRelayScheduler가 주기적으로 INIT 이벤트를 읽어 Kafka로 발행함 (Step 2 참조)
 ```
 
 ```mermaid
@@ -412,7 +408,7 @@ sequenceDiagram
         Note over Facade, PG: 30분 지연 건이므로 물리적 결제 취소 연동
         Facade->>PG: 결제 취소 API 호출 (환불)
         Facade->>Notification: 환불 완료 알림 발송 (sendPaymentRefund)
-        Facade->>DB: FAILED / CANCELED 갱신 및 보상 트랜잭션 (재고/쿠폰 복구)
+        Facade->>DB: REFUNDED / CANCELED 갱신 및 보상 트랜잭션 (재고/쿠폰 복구)
     else 미결제 / 실패 (PENDING / FAILED)
         Facade->>DB: FAILED / CANCELED 갱신 및 보상 트랜잭션 (재고/쿠폰 복구)
         Note over Facade: 스팸 방지를 위해 일반 타임아웃 알림 미발송
@@ -421,29 +417,24 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    title 주문 결제 완료에 따른 알림 발송 및 보정(Event)
+    title 주문 결제 완료에 따른 알림 발송 (Kafka 기반 이벤트 드리븐)
     participant CallbackAPI as 결제 Callback API
-    participant DB
+    participant DB as Commerce DB
     participant EventPublisher
-    participant NotificationListener
-    participant NotificationService as 외부 알림 서비스
+    participant OutboxListener
+    participant Kafka as Kafka Broker
+    participant NotificationSystem as 분리된 알림 시스템 (Consumer)
 
     CallbackAPI->>DB: 결제 APPROVED 및 주문 COMPLETED 저장
     CallbackAPI->>EventPublisher: 결제 완료 이벤트 발행 (PaymentCompletedEvent)
+    EventPublisher->>OutboxListener: 이벤트 수신 (트랜잭션 내부, 동기)
+    OutboxListener->>DB: Outbox 이벤트 저장 (INSERT, 상태: INIT)
     Note over CallbackAPI, DB: [@Transactional Commit]
     
-    EventPublisher-)NotificationListener: 이벤트 수신 (AFTER_COMMIT, @Async)
-    activate NotificationListener
-    NotificationListener->>NotificationService: 푸시/알림톡 발송 요청
+    Note over DB, Kafka: 이후 OutboxRelayScheduler가 주기적으로 INIT 이벤트를 읽어 Kafka로 발행함
     
-    alt 발송 성공
-        NotificationService-->>NotificationListener: 성공 응답
-    else 발송 실패 (Timeout, 외부 장애 등)
-        NotificationService--xNotificationListener: 실패 예외
-        NotificationListener->>DB: 알림 실패 내역(Outbox) 저장 (INSERT)
-        Note right of NotificationListener: 배치 스케줄러가 주기적으로 실패 내역 재발송
-    end
-    deactivate NotificationListener
+    Kafka->>NotificationSystem: 이벤트 수신 (Consumer)
+    Note right of NotificationSystem: 알림 전용 시스템이 독립적으로 푸시/알림톡 발송<br>API 장애 시 스스로 DLQ(Dead Letter Queue) 등을 활용해 재시도
 ```
 
 ```mermaid
@@ -481,4 +472,50 @@ sequenceDiagram
         Note over DB, Facade: 비즈니스가 롤백되어도 <br>이미 비동기로 전송/저장된 로그는 남아 "시도"를 기록함
     end
     Facade-->>Controller: 응답
+```
+
+```mermaid
+sequenceDiagram
+    title Transactional Outbox를 통한 Kafka 이벤트 파이프라인 (Step 2)
+    participant DB as Commerce DB (Outbox)
+    participant Scheduler as OutboxRelayScheduler
+    participant Kafka as Kafka Broker
+    participant Consumer as MetricsKafkaConsumer
+    participant CDB as Collector DB
+
+    rect rgba(0, 128, 0, 0.1)
+        Note over Scheduler, Kafka: [이벤트 발행 보장 (At-Least-Once)]
+        loop 주기적 실행 (예: 1~3초)
+            Scheduler->>DB: 상태가 INIT인 이벤트 조회 (SELECT)
+            DB-->>Scheduler: OutboxEvent 리스트
+            
+            Scheduler->>Kafka: 이벤트 전송 (acks=all, idempotence=true)<br/>※ Partition Key: product_id
+            
+            alt 전송 성공
+                Kafka-->>Scheduler: Ack
+                Scheduler->>DB: 이벤트 상태 PUBLISHED로 갱신 (UPDATE)
+            else 전송 실패 / 타임아웃
+                Kafka--xScheduler: Nack / Timeout
+                Note right of Scheduler: 상태를 갱신하지 않고 둠 (다음 주기에 재시도)
+            end
+        end
+    end
+
+    rect rgba(0, 0, 255, 0.1)
+        Note over Consumer, CDB: [컨슈머 멱등성 및 순서 보장 트랜잭션]
+        Kafka->>Consumer: 이벤트 수신 (수동 Ack 모드)
+        
+        Consumer->>CDB: 트랜잭션 시작
+        Consumer->>CDB: 1. event_handled 중복 검사 (SELECT)
+        
+        alt 이미 처리된 event_id 존재
+            Note right of Consumer: 중복 이벤트 무시
+            Consumer->>Kafka: 수동 Ack (커밋)
+        else 새로운 이벤트
+            Consumer->>CDB: 2. product_metrics 집계 데이터 증감 (UPDATE/UPSERT)
+            Consumer->>CDB: 3. event_handled 이력 저장 (INSERT)
+            CDB-->>Consumer: 트랜잭션 커밋
+            Consumer->>Kafka: 4. 수동 Ack (커밋)
+        end
+    end
 ```

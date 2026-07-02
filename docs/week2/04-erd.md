@@ -22,7 +22,6 @@ erDiagram
         bigint brand_id FK
         varchar name
         decimal_15_4 price
-        int like_count "비정규화된 좋아요 수"
         boolean is_deleted "논리 삭제 플래그"
         datetime created_at
         datetime updated_at
@@ -58,7 +57,7 @@ erDiagram
         bigint id PK
         bigint user_id FK
         bigint coupon_template_id FK
-        varchar status "AVAILABLE, USED, EXPIRED"
+        varchar status "AVAILABLE, USED (※ EXPIRED는 DB에 저장되지 않고 WAS에서 동적 가공)"
         bigint version "Optimistic Lock용 버전"
         datetime created_at
         datetime updated_at
@@ -79,9 +78,9 @@ erDiagram
 
     PAYMENTS {
         bigint id PK
-        bigint order_id FK "ORDERS 참조 (Unique Index: 중복 결제 방지)"
+        bigint order_id FK "ORDERS 참조"
         varchar method "CARD, TRANSFER"
-        varchar status "READY, APPROVED, FAILED"
+        varchar status "READY, APPROVED, FAILED, REFUNDED"
         decimal_15_4 amount "실제 결제액"
         varchar transaction_id "외부 결제사 거래 식별자"
         datetime approved_at "결제 승인 시각"
@@ -99,6 +98,32 @@ erDiagram
         int quantity
     }
 
+    OUTBOX_EVENTS {
+        bigint id PK
+        varchar aggregate_type "PRODUCT_LIKE, ORDER 등"
+        bigint aggregate_id
+        varchar event_type "LIKE_CREATED, ORDER_COMPLETED 등"
+        text payload "JSON 이벤트 데이터"
+        varchar status "INIT, PUBLISHED"
+        datetime created_at
+        datetime updated_at
+    }
+
+    PRODUCT_METRICS {
+        bigint product_id PK
+        int total_likes "누적 좋아요 수"
+        int total_sales "누적 판매량"
+        int total_views "누적 조회수"
+        datetime created_at
+        datetime updated_at
+    }
+
+    EVENT_HANDLED {
+        bigint event_id PK "OUTBOX_EVENTS의 id를 그대로 사용"
+        varchar event_type
+        datetime handled_at
+    }
+
     %% Relationships
     BRANDS ||--o{ PRODUCTS : "has"
     PRODUCTS ||--|| STOCKS : "has"
@@ -109,5 +134,6 @@ erDiagram
     USERS ||--o{ COUPON_ISSUES : "owns"
     COUPON_TEMPLATES ||--o{ COUPON_ISSUES : "issues"
     COUPON_ISSUES ||--o| ORDERS : "applied to"
-    ORDERS ||--o| PAYMENTS : "has (1:1 간접 참조)"
+    ORDERS ||--o{ PAYMENTS : "has (1:N 결제 시도 이력)"
+    PRODUCTS ||--o| PRODUCT_METRICS : "has metrics"
 ```
