@@ -40,12 +40,12 @@ Kent Beck의 TDD(Red-Green-Refactor)와 Tidy First 원칙에 따라 구조적 �
 
 **목표:** Kafka 메시지를 안전하게 수신하고 이벤트의 중복 처리(At-Least-Once의 한계)를 완벽하게 방어합니다.
 
-- [ ] **멱등성 방어 테이블 구성 (Structural)**
+- [x] **멱등성 방어 테이블 구성 (Structural)**
   - `EVENT_HANDLED` 테이블 (필드: event_id 등) 및 리포지토리 구성
-- [ ] **메시지 수신 및 수동 커밋 처리 (Behavioral)**
+- [x] **메시지 수신 및 수동 커밋 처리 (Behavioral)**
   - Kafka 메시지 수신 실패 시 커밋되지 않고, 성공 시 수동 커밋되는 수신 테스트 작성 (Red)
   - Consumer의 `enable.auto.commit = false` 설정 및 `Acknowledgment.acknowledge()` 처리 (Green)
-- [ ] **중복 메시지 방어 로직 (Behavioral)**
+- [x] **중복 메시지 방어 로직 (Behavioral)**
   - 동일한 `event_id` 메시지가 두 번 수신되었을 때 DB 수치가 1번만 오르는 것을 검증하는 멱등성 테스트 작성 (Red)
   - 메인 업데이트 트랜잭션 내부에서 `EVENT_HANDLED` 테이블의 고유 ID를 기록/검증하여 중복 처리 건너뛰기 구현 (Green)
 
@@ -53,10 +53,10 @@ Kent Beck의 TDD(Red-Green-Refactor)와 Tidy First 원칙에 따라 구조적 �
 
 **목표:** 주문/결제 등 중요 데이터는 안전하게 로그를 남기고, 단순 조회의 로깅은 비동기 응답성 향상에 집중합니다.
 
-- [ ] **중요 비즈니스(주문/결제) 실패 로깅 적용 (Behavioral)**
+- [x] **중요 비즈니스(주문/결제) 실패 로깅 적용 (Behavioral)**
   - 결제 실패 시 이벤트 로깅 데이터가 유실되지 않고 Outbox 테이블에 들어가는지 검증하는 테스트 (Red)
   - 중요한 퍼널 로그에 대해 Outbox 패턴으로 발행하도록 적용 (Green)
-- [ ] **단순 조회/좋아요 비동기 로깅 (Behavioral)**
+- [x] **단순 조회/좋아요 비동기 로깅 (Behavioral)**
   - 상품 단순 조회 시 에러가 나더라도 로깅은 `Fire & Forget` 처리되는 비동기 리스너 테스트 (Red)
   - `@Async` 기반 단순 이벤트 발행 및 로그 출력 (Green)
 
