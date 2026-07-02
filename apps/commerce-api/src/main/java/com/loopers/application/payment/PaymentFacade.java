@@ -11,6 +11,8 @@ import com.loopers.domain.payment.PaymentGateway.PaymentGatewayResult;
 import com.loopers.domain.payment.PaymentStatus;
 import com.loopers.domain.payment.PaymentCompletedEvent;
 import com.loopers.domain.payment.PaymentFailedEvent;
+import com.loopers.domain.user.UserActionLevel;
+import com.loopers.domain.user.UserActionLogEvent;
 import com.loopers.support.error.CoreException;
 import com.loopers.support.error.ErrorType;
 import lombok.RequiredArgsConstructor;
@@ -189,6 +191,14 @@ public class PaymentFacade {
 
                 // 보상 처리를 위한 비동기 이벤트(Outbox) 발행
                 eventPublisher.publish(new PaymentFailedEvent(paymentId, payment.getOrderId(), order.getUserId(), payment.getAmount()));
+
+                // 중요 비즈니스 실패 로깅 적용
+                eventPublisher.publish(new UserActionLogEvent(
+                        order.getUserId(),
+                        "PAYMENT_FAILED",
+                        String.format("{\"paymentId\":%d,\"orderId\":%d,\"amount\":%s}", paymentId, payment.getOrderId(), payment.getAmount()),
+                        UserActionLevel.HIGH
+                ));
 
                 // 3. 알림 서비스 호출 (Fallback 스케줄러 보정이 아닐 때만 발송)
                 if (!isFallback) {
