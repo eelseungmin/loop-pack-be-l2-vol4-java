@@ -11,6 +11,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.loopers.testcontainers.RedisTestContainersConfig;
+import org.springframework.test.context.ContextConfiguration;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -20,6 +22,7 @@ import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
+@ContextConfiguration(initializers = RedisTestContainersConfig.class)
 class LikeFacadeConcurrencyTest {
 
     @Autowired

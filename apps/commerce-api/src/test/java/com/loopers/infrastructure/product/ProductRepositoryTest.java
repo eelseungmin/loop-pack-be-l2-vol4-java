@@ -15,12 +15,15 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
+import org.springframework.test.context.ContextConfiguration;
+import com.loopers.testcontainers.RedisTestContainersConfig;
 
 import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
+@ContextConfiguration(initializers = RedisTestContainersConfig.class)
 class ProductRepositoryTest {
 
     @Autowired

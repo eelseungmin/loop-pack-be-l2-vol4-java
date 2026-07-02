@@ -12,6 +12,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.loopers.testcontainers.RedisTestContainersConfig;
+import org.springframework.test.context.ContextConfiguration;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -20,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @SpringBootTest
+@ContextConfiguration(initializers = RedisTestContainersConfig.class)
 class CouponFacadeTest {
 
     @Autowired

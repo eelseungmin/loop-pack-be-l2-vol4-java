@@ -2,8 +2,11 @@ package com.loopers;
         // 모든 빈이 올바르게 로드되었는지 확인하는 데 사용됩니다.
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.loopers.testcontainers.RedisTestContainersConfig;
+import org.springframework.test.context.ContextConfiguration;
 
 @SpringBootTest
+@ContextConfiguration(initializers = RedisTestContainersConfig.class)
 class CommerceApiContextTest {
 
     @Test
