@@ -59,7 +59,10 @@ classDiagram
         +BigDecimal minOrderAmount
         +BigDecimal maxDiscountAmount
         +LocalDateTime expiredAt
+        +int totalQuantity
+        +int issuedQuantity
         +isValid() boolean
+        +increaseIssuedQuantity()
     }
     CouponTemplate --|> BaseSoftDeleteEntity
 
@@ -231,7 +234,11 @@ classDiagram
         +removeLike(userId, productId)
     }
     class CouponFacade {
-        +issueCoupon(userId, couponTemplateId)
+        +requestCouponIssue(userId, couponTemplateId): String
+        +getIssueRequestStatus(requestId): CouponRequestStatus
+    }
+    class CouponKafkaConsumer {
+        +consumeCouponIssueEvent(ConsumerRecord)
     }
     class ProductFacade {
         +retrieveProducts(condition, pageable)

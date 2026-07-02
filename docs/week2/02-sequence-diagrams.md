@@ -302,40 +302,61 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    title 쿠폰 발급 API 시퀀스 다이어그램
+    title 선착순 쿠폰 비동기 발급 및 상태 폴링 시퀀스
     actor User
     participant Controller as CouponController
-    participant Facade as CouponFacade (Application)
-    participant Repo as Repositories (DB)
-    participant Domain as CouponIssue (Domain)
+    participant Facade as CouponIssueFacade (Producer)
+    participant Redis as Redis (1차 검증/상태)
+    participant Kafka as Kafka Broker
+    participant Consumer as CouponKafkaConsumer
+    participant DB as Database
 
+    %% 1단계: 발급 요청 (Producer)
     User->>Controller: POST /api/v1/coupons/{couponId}/issue
-    activate Controller
-
-    Controller->>Facade: 쿠폰 발급 요청 (userId, couponTemplateId)
-    activate Facade
-
-    Facade->>Repo: 쿠폰 템플릿 조회 (SELECT)
-    Repo-->>Facade: CouponTemplate 엔티티 반환
-
-    Note right of Facade: 템플릿 유효성 및 만료일 검증 로직 실행 (Domain)
-    Facade->>Repo: 기존 발급 이력 존재 여부 조회 (1인 1매 제한)
-    Repo-->>Facade: count 반환 
-
-    alt 이미 발급 받았거나 템플릿 만료됨
-        Note right of Facade: 예외 발생 (CoreException)
-        Facade-->>Controller: 예외 전파
-    else 발급 가능
-        Facade->>Domain: CouponIssue 발급 객체 생성
-        Domain-->>Facade: CouponIssue 엔티티
-        Facade->>Repo: 쿠폰 발급 내역 저장 (INSERT INTO coupon_issue)
-        Repo-->>Facade: 저장 완료
+    Controller->>Facade: 비동기 발급 요청
+    
+    Facade->>Redis: SADD coupon:issue:users:{couponId} (중복 검증)
+    alt 이미 참여한 유저 (중복)
+        Redis-->>Facade: 0 (실패)
+        Facade-->>Controller: 중복 발급 예외 반환
+        Controller-->>User: 409 Conflict
+    else 신규 유저
+        Facade->>Redis: INCR coupon:issue:count:{couponId} (수량 증가)
+        alt 수량 초과
+            Redis-->>Facade: 초과된 카운트
+            Facade-->>Controller: 수량 초과 예외 반환
+            Controller-->>User: 400 Bad Request
+        else 수량 내 진입 성공
+            Facade->>Redis: 상태 초기화 SET request:{requestId}:status = "IN_PROGRESS"
+            Facade->>Kafka: 이벤트 발행 (requestId, userId, couponId)
+            Facade-->>Controller: requestId 반환
+            Controller-->>User: 202 Accepted (requestId)
+        end
     end
 
-    Facade-->>Controller: 성공 반환
-    deactivate Facade
-    Controller-->>User: 200 OK
-    deactivate Controller
+    %% 2단계: 결과 폴링
+    rect rgba(200, 200, 200, 0.2)
+        Note over User, Redis: 2단계: 클라이언트의 비동기 결과 폴링
+        loop 1~2초 간격
+            User->>Controller: GET /api/v1/coupons/requests/{requestId}
+            Controller->>Redis: GET request:{requestId}:status
+            Redis-->>Controller: "IN_PROGRESS" 또는 "SUCCESS", "FAILED"
+            Controller-->>User: 상태 반환
+        end
+    end
+
+    %% 3단계: 백그라운드 발급 (Consumer)
+    rect rgba(0, 128, 0, 0.1)
+        Note over Consumer, DB: 3단계: Kafka Consumer가 실제 DB에 발급
+        Kafka->>Consumer: 발급 요청 이벤트 수신
+        Consumer->>DB: DB 비관적 락 획득 (CouponTemplate)
+        Consumer->>DB: issued_quantity 증가 및 CouponIssue 저장
+        alt 발급 성공
+            Consumer->>Redis: SET request:{requestId}:status = "SUCCESS"
+        else 발급 실패 (DB 수량 초과 등 예외 발생)
+            Consumer->>Redis: SET request:{requestId}:status = "FAILED"
+        end
+    end
 ```
 
 ```mermaid

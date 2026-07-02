@@ -48,6 +48,8 @@ erDiagram
         decimal_15_4 min_order_amount "nullable"
         decimal_15_4 max_discount_amount "nullable"
         datetime expired_at
+        int total_quantity "발급 제한 수량"
+        int issued_quantity "현재 발급된 수량"
         boolean is_deleted "논리 삭제 플래그"
         datetime created_at
         datetime updated_at

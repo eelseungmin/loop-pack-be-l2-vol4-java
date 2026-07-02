@@ -42,7 +42,12 @@
     *   이미 삭제된 상품에 대해 좋아요를 등록하려고 시도할 경우 에러를 반환한다.
 
 ### 2.6 쿠폰 및 할인 정책
-*   **쿠폰 발급 및 선착순 정책:** 쿠폰 발급 시 선착순 수량 제한(재고 제한)은 없으며, 유효기간 내에 1인 1매에 한해 발급 여부(중복 발급 방지)만 체크한다.
+*   **쿠폰 발급 및 선착순 정책 (Kafka 비동기):** 
+    *   특정 쿠폰의 경우 발급 한도(`totalQuantity`)가 존재하여 선착순 발급이 진행된다.
+    *   **1차 검증 (API 계층):** 트래픽이 몰릴 때 시스템 부하를 막기 위해, API 서버(Producer)에서 **Redis의 INCR 연산과 Set**을 활용하여 수량 초과 여부와 중복 발급 여부를 1차적으로 고속 검증한다. (빠른 실패, Fail Fast)
+    *   **비동기 발행:** 검증을 통과한 요청만 Kafka에 '발급 요청 이벤트'로 발행하고, 클라이언트에게는 즉시 비동기 처리를 위한 고유 `requestId`와 202 Accepted를 반환한다.
+    *   **최종 발급 (Consumer 계층):** Kafka Consumer가 이벤트를 수신하여 DB 트랜잭션 내에서 `COUPON_TEMPLATES`의 비관적 락을 획득, 최종 수량 검증을 수행하고 발급 상태를 갱신(Redis 상태 업데이트 포함)한다.
+    *   **발급 결과 확인:** 클라이언트는 `requestId`를 이용해 전용 폴링 API(`GET /api/v1/coupons/requests/{requestId}`)를 호출하여 자신의 발급 요청이 성공했는지, 실패했는지 최종 상태(`IN_PROGRESS`, `SUCCESS`, `FAILED`)를 확인한다.
 *   **쿠폰 종류 및 할인 계산:**
     *   **정액 쿠폰(`FIXED`):** 주문 금액에서 고정된 할인 금액(원)을 차감한다. (주문 금액이 할인액보다 작을 경우 최종 금액은 0원 미만이 될 수 없다)
     *   **정률 쿠폰(`RATE`):** 주문 금액의 일정 비율(%)을 할인한다. 단, 쿠폰에 **최대 할인 금액 한도(`maxDiscountAmount`)**가 설정된 경우 해당 금액 한도까지만 할인한다.
@@ -181,7 +186,8 @@
 #### 고객용 기능
 | METHOD | URI | user_required | 설명 |
 | --- | --- | --- | --- |
-| POST | `/api/v1/coupons/{couponId}/issue` | O | 쿠폰 발급 요청 |
+| POST | `/api/v1/coupons/{couponId}/issue` | O | 선착순 쿠폰 발급 요청 (비동기 처리 후 requestId 반환) |
+| GET | `/api/v1/coupons/requests/{requestId}` | O | 쿠폰 발급 비동기 요청 결과 상태 조회 (IN_PROGRESS, SUCCESS, FAILED) |
 | GET | `/api/v1/users/me/coupons` | O | 내 쿠폰 목록 조회 (AVAILABLE / USED / EXPIRED 상태 반환) |
 
 #### 어드민 기능
