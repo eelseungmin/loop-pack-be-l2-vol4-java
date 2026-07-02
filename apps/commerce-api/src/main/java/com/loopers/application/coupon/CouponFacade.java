@@ -27,13 +27,15 @@ public class CouponFacade {
 
     @Transactional
     public CouponIssue issueCoupon(Long userId, Long couponTemplateId) {
-        CouponTemplate template = couponRepository.findTemplateById(couponTemplateId)
+        CouponTemplate template = couponRepository.findTemplateForUpdateById(couponTemplateId)
                 .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "조회할 수 없는 쿠폰템플릿입니다."));
 
         couponRepository.findIssueByUserIdAndTemplateId(userId, couponTemplateId)
                 .ifPresent(issue -> {
                     throw new CoreException(ErrorType.CONFLICT, "이미 발급된 쿠폰입니다.");
                 });
+
+        template.increaseIssuedQuantity();
 
         CouponIssue newIssue = new CouponIssue(userId, template);
         return couponRepository.saveIssue(newIssue);

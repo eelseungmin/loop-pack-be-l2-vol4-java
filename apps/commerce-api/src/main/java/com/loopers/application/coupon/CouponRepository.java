@@ -11,6 +11,7 @@ import java.util.Optional;
 public interface CouponRepository {
     CouponTemplate saveTemplate(CouponTemplate template);
     Optional<CouponTemplate> findTemplateById(Long id);
+    Optional<CouponTemplate> findTemplateForUpdateById(Long id);
     Page<CouponTemplate> findAllTemplates(Pageable pageable);
     void deleteTemplate(Long id);
 
