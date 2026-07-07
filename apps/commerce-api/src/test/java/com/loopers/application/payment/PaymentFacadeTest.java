@@ -61,6 +61,9 @@ class PaymentFacadeTest {
     private com.loopers.domain.event.EventPublisher eventPublisher;
 
     @Autowired
+    private com.loopers.infrastructure.outbox.OutboxEventJpaRepository outboxEventJpaRepository;
+
+    @Autowired
     private DatabaseCleanUp databaseCleanUp;
 
     @AfterEach
@@ -98,6 +101,11 @@ class PaymentFacadeTest {
         assertThat(hasKey).isFalse();
 
         Mockito.verify(eventPublisher).publish(Mockito.any(com.loopers.domain.payment.PaymentCompletedEvent.class));
+
+        // 아웃박스 레코드 저장 확인
+        java.util.List<com.loopers.domain.outbox.OutboxEvent> outboxEvents = outboxEventJpaRepository.findAll();
+        assertThat(outboxEvents).isNotEmpty();
+        assertThat(outboxEvents.get(0).getEventType()).isEqualTo(com.loopers.domain.outbox.EventType.PAYMENT_COMPLETED);
     }
 
     @Test

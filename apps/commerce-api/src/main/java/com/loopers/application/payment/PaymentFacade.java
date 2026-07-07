@@ -78,20 +78,22 @@ public class PaymentFacade {
         try {
             PaymentGatewayResult result = paymentGateway.requestPayment(orderId, amount, method);
             
-            // 4. 성공 시 상태 APPROVED로 변경 (단일 데이터 변경 작업)
-            PaymentModel targetPayment = paymentRepository.findById(paymentId)
-                    .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "결제 내역을 찾을 수 없습니다."));
-            targetPayment.approve(result.transactionId(), result.approvedAt());
-            paymentRepository.save(targetPayment);
-            
-            // 5. 성공 후 Redis 키 제거
-            paymentTempStorage.deleteRetryKey(paymentId);
+            // 4. 성공 시 상태 APPROVED로 변경 (트랜잭션 묶음 처리)
+            transactionTemplate.executeWithoutResult(status -> {
+                PaymentModel targetPayment = paymentRepository.findById(paymentId)
+                        .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "결제 내역을 찾을 수 없습니다."));
+                targetPayment.approve(result.transactionId(), result.approvedAt());
+                paymentRepository.save(targetPayment);
+                
+                // 5. 성공 후 Redis 키 제거
+                paymentTempStorage.deleteRetryKey(paymentId);
 
-            // 6. 결제 완료 이벤트 발행
-            Long userId = orderRepository.findById(orderId)
-                    .map(com.loopers.domain.order.OrderModel::getUserId)
-                    .orElse(null);
-            eventPublisher.publish(new PaymentCompletedEvent(paymentId, orderId, userId, amount));
+                // 6. 결제 완료 이벤트 발행 (아웃박스 저장을 위해 트랜잭션 내에서 발행)
+                Long userId = orderRepository.findById(orderId)
+                        .map(com.loopers.domain.order.OrderModel::getUserId)
+                        .orElse(null);
+                eventPublisher.publish(new PaymentCompletedEvent(paymentId, orderId, userId, amount));
+            });
         } catch (Exception e) {
             log.warn("Payment PG request timeout or failed, keeping READY status for payment id: {}", paymentId, e);
         }

@@ -34,8 +34,13 @@ sequenceDiagram
     
     alt 정상 접수
         PG-->>Facade: 200 OK
-        Facade-->>PaymentAPI: 결제 진행 중
-        PaymentAPI-->>User: 진행 중 응답
+        rect rgba(0, 128, 0, 0.1)
+            Note over Facade, DB: 트랜잭션 3: 결제 완료 반영 및 아웃박스 적재 (단기)
+            Facade->>DB: 결제 APPROVED 업데이트
+            Facade->>DB: PAYMENT_COMPLETED 아웃박스 적재
+        end
+        Facade-->>PaymentAPI: 결제 승인 성공 (paymentId 반환)
+        PaymentAPI-->>User: 200 OK (결제 완료)
     else Timeout 예외 발생
         PG--xFacade: Timeout
         Note right of Facade: 즉시 취소하지 않고 상태 유지<br>(콜백이나 Redis TTL 만료 시 보정)
