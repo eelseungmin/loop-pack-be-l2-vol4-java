@@ -67,4 +67,9 @@ public class CouponRepositoryImpl implements CouponRepository {
     public List<CouponTemplate> findTemplatesByIds(List<Long> ids) {
         return templateJpaRepository.findByIdIn(ids);
     }
+
+    @Override
+    public Optional<CouponTemplate> findTemplateForUpdateById(Long id) {
+        return templateJpaRepository.findForUpdateById(id);
+    }
 }

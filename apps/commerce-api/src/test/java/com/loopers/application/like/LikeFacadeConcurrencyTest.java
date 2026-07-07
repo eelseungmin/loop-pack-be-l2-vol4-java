@@ -11,6 +11,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.loopers.testcontainers.RedisTestContainersConfig;
+import org.springframework.test.context.ContextConfiguration;
 
 import java.math.BigDecimal;
 import java.util.ArrayList;
@@ -20,6 +22,7 @@ import java.util.concurrent.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest
+@ContextConfiguration(initializers = RedisTestContainersConfig.class)
 class LikeFacadeConcurrencyTest {
 
     @Autowired
@@ -75,6 +78,7 @@ class LikeFacadeConcurrencyTest {
             }
 
             doneLatch.await(); // 모든 스레드의 작업이 끝날 때까지 대기
+            Thread.sleep(1500); // 비동기 집계 처리 대기
 
             // then(스레드 예외 전파 보장)
             for (Future<?> f : futures) {
@@ -118,6 +122,7 @@ class LikeFacadeConcurrencyTest {
                 });
             }
             doneLatch.await();
+            Thread.sleep(1500); // 비동기 집계 처리 대기
 
             // then
             int likeCount = likeRepository.countByProductId(productId);
@@ -165,6 +170,7 @@ class LikeFacadeConcurrencyTest {
                 });
             }
             doneLatch.await();
+            Thread.sleep(1500); // 비동기 집계 처리 대기
 
             // then
             int likeCount = likeRepository.countByProductId(productId);

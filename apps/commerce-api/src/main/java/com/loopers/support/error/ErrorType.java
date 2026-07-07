@@ -34,7 +34,10 @@ public enum ErrorType {
     STOCK_NOT_FOUND(HttpStatus.NOT_FOUND, "STOCK-001", "재고 정보를 찾을 수 없습니다."),
 
     /** 주문 관련 에러 */
-    ORDER_NOT_FOUND(HttpStatus.NOT_FOUND, "ORDER-001", "주문 내역을 찾을 수 없습니다.");
+    ORDER_NOT_FOUND(HttpStatus.NOT_FOUND, "ORDER-001", "주문 내역을 찾을 수 없습니다."),
+
+    /** 쿠폰 관련 에러 */
+    COUPON_EXHAUSTED(HttpStatus.CONFLICT, "COUPON-001", "쿠폰 수량이 모두 소진되었습니다.");
 
     private final HttpStatus status;
     private final String code;

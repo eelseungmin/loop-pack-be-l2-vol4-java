@@ -57,6 +57,12 @@ class PaymentFacadeTest {
     @SpyBean
     private NotificationService notificationService;
 
+    @org.springframework.boot.test.mock.mockito.SpyBean
+    private com.loopers.domain.event.EventPublisher eventPublisher;
+
+    @Autowired
+    private com.loopers.infrastructure.outbox.OutboxEventJpaRepository outboxEventJpaRepository;
+
     @Autowired
     private DatabaseCleanUp databaseCleanUp;
 
@@ -93,6 +99,13 @@ class PaymentFacadeTest {
         String redisKey = "payment_retry:" + paymentId;
         Boolean hasKey = defaultRedisTemplate.hasKey(redisKey);
         assertThat(hasKey).isFalse();
+
+        Mockito.verify(eventPublisher).publish(Mockito.any(com.loopers.domain.payment.PaymentCompletedEvent.class));
+
+        // 아웃박스 레코드 저장 확인
+        java.util.List<com.loopers.domain.outbox.OutboxEvent> outboxEvents = outboxEventJpaRepository.findAll();
+        assertThat(outboxEvents).isNotEmpty();
+        assertThat(outboxEvents.get(0).getEventType()).isEqualTo(com.loopers.domain.outbox.EventType.PAYMENT_COMPLETED);
     }
 
     @Test
@@ -347,13 +360,9 @@ class PaymentFacadeTest {
         var updatedOrder = orderRepository.findById(savedOrder.getId()).orElseThrow();
         assertThat(updatedOrder.getStatus()).isEqualTo(com.loopers.domain.order.OrderStatus.CANCELED);
 
-        // 재고 원복 확인 (9개 -> 10개)
-        var updatedProduct = productRepository.findById(savedProduct.getId()).orElseThrow();
-        assertThat(updatedProduct.getStock().getQuantity()).isEqualTo(10);
-
-        // 쿠폰 원복 확인 (USED -> AVAILABLE)
-        var updatedCoupon = couponRepository.findIssueById(savedCouponIssue.getId()).orElseThrow();
-        assertThat(updatedCoupon.getStatus()).isEqualTo(com.loopers.domain.coupon.CouponStatus.AVAILABLE);
+        // 보상 이벤트를 비동기로 발행했는지 확인
+        Mockito.verify(eventPublisher, Mockito.times(1))
+                .publish(Mockito.any(com.loopers.domain.payment.PaymentFailedEvent.class));
 
         // 알림 호출 확인
         Mockito.verify(notificationService, Mockito.times(1))
@@ -393,5 +402,105 @@ class PaymentFacadeTest {
         assertThat(updatedOrder.getStatus()).isEqualTo(com.loopers.domain.order.OrderStatus.PENDING);
 
         assertThat(defaultRedisTemplate.hasKey(redisKey)).isTrue();
+    }
+
+    @Test
+    @DisplayName("completePayment 호출 시 정상적으로 transactionId가 저장되고 APPROVED 상태로 변경되며 주문도 COMPLETED 처리된다.")
+    void completePayment_Success_ShouldSaveTransactionId() {
+        // given
+        var order = new com.loopers.domain.order.OrderModel(1000L, null, new BigDecimal("5000"), BigDecimal.ZERO, new BigDecimal("5000"));
+        var savedOrder = orderRepository.save(order);
+
+        var payment = new PaymentModel(savedOrder.getId(), PaymentMethod.CARD, new BigDecimal("5000"));
+        var savedPayment = paymentRepository.save(payment);
+
+        String transactionId = "tx-real-123";
+
+        // when
+        paymentFacade.completePayment(savedPayment.getId(), transactionId);
+
+        // then
+        var updatedPayment = paymentRepository.findById(savedPayment.getId()).orElseThrow();
+        assertThat(updatedPayment.getStatus()).isEqualTo(PaymentStatus.APPROVED);
+        assertThat(updatedPayment.getTransactionId()).isEqualTo(transactionId);
+    }
+
+    @Test
+    @DisplayName("결제 콜백(completePayment)과 스케줄러 보정(retryOrCompensatePayment)이 동시에 실행될 때, 하나만 성공하고 하나는 무시된다.")
+    void completePayment_And_RetryOrCompensate_Concurrent_ShouldHandleSafely() throws InterruptedException {
+        // given
+        var order = new com.loopers.domain.order.OrderModel(10L, null, new BigDecimal("5000"), BigDecimal.ZERO, new BigDecimal("5000"));
+        var savedOrder = orderRepository.save(order);
+
+        var payment = new PaymentModel(savedOrder.getId(), PaymentMethod.CARD, new BigDecimal("5000"));
+        var savedPayment = paymentRepository.save(payment);
+
+        Mockito.doReturn(new PaymentGateway.PaymentGatewayQueryResult(PaymentGatewayStatus.APPROVED, "tx-concurrent-123", LocalDateTime.now()))
+                .when(paymentGateway).queryPaymentStatus(savedOrder.getId());
+
+        int threadCount = 2;
+        java.util.concurrent.ExecutorService executorService = java.util.concurrent.Executors.newFixedThreadPool(threadCount);
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        java.util.concurrent.CountDownLatch doneLatch = new java.util.concurrent.CountDownLatch(threadCount);
+
+        // when
+        executorService.submit(() -> {
+            try {
+                latch.await();
+                paymentFacade.completePayment(savedPayment.getId(), "tx-concurrent-123");
+            } catch (Exception e) {
+            } finally {
+                doneLatch.countDown();
+            }
+        });
+
+        executorService.submit(() -> {
+            try {
+                latch.await();
+                paymentFacade.retryOrCompensatePayment(savedPayment.getId());
+            } catch (Exception e) {
+            } finally {
+                doneLatch.countDown();
+            }
+        });
+
+        latch.countDown();
+        doneLatch.await();
+
+        // then
+        // 중복 실행을 방지하기 위한 락이나 제어가 없다면 이벤트가 2번 발행되어 실패하게 됨 (Red)
+        Mockito.verify(eventPublisher, Mockito.times(1))
+                .publish(Mockito.any(com.loopers.domain.payment.PaymentCompletedEvent.class));
+    }
+
+    @Test
+    @DisplayName("보상 처리는 분리되었으므로, 보상 이벤트(PaymentFailedEvent)가 정상적으로 발행되어야 하며 상태 변경은 롤백되지 않는다.")
+    void retryOrCompensatePayment_ShouldKeepPaymentFailedAndPublishEvent() {
+        // given
+        var order = new com.loopers.domain.order.OrderModel(20L, null, new BigDecimal("5000"), BigDecimal.ZERO, new BigDecimal("5000"));
+        var savedOrder = orderRepository.save(order);
+
+        var payment = new PaymentModel(savedOrder.getId(), PaymentMethod.CARD, new BigDecimal("5000"));
+        var savedPayment = paymentRepository.save(payment);
+
+        String redisKey = "payment_retry:" + savedPayment.getId();
+        defaultRedisTemplate.opsForValue().set(redisKey, "2");
+
+        Mockito.doReturn(new PaymentGateway.PaymentGatewayQueryResult(PaymentGatewayStatus.PENDING, null, null))
+                .when(paymentGateway).queryPaymentStatus(savedOrder.getId());
+
+        // when
+        paymentFacade.retryOrCompensatePayment(savedPayment.getId());
+
+        // then
+        var updatedPayment = paymentRepository.findById(savedPayment.getId()).orElseThrow();
+        assertThat(updatedPayment.getStatus()).isEqualTo(PaymentStatus.FAILED);
+
+        var updatedOrder = orderRepository.findById(savedOrder.getId()).orElseThrow();
+        assertThat(updatedOrder.getStatus()).isEqualTo(com.loopers.domain.order.OrderStatus.CANCELED);
+        
+        // 보상 이벤트를 비동기로 처리하기 위해 발행했는지 확인
+        Mockito.verify(eventPublisher, Mockito.times(1))
+                .publish(Mockito.any(com.loopers.domain.payment.PaymentFailedEvent.class));
     }
 }

@@ -2,16 +2,20 @@ package com.loopers.infrastructure.payment;
 
 import com.loopers.application.payment.PaymentTempStorage;
 import lombok.RequiredArgsConstructor;
+import org.redisson.api.RLock;
+import org.redisson.api.RedissonClient;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
+import java.util.concurrent.TimeUnit;
 
 @Component
 @RequiredArgsConstructor
 public class RedisPaymentTempStorage implements PaymentTempStorage {
 
     private final RedisTemplate<String, String> defaultRedisTemplate;
+    private final RedissonClient redissonClient;
 
     @Override
     public void setRetryCount(Long paymentId, int count, Duration ttl) {
@@ -34,14 +38,22 @@ public class RedisPaymentTempStorage implements PaymentTempStorage {
 
     @Override
     public boolean lockOrder(Long orderId) {
-        String key = "payment_lock:order:" + orderId;
-        Boolean success = defaultRedisTemplate.opsForValue().setIfAbsent(key, "LOCKED", Duration.ofSeconds(10));
-        return Boolean.TRUE.equals(success);
+        String key = "payment:lock:" + orderId;
+        RLock lock = redissonClient.getLock(key);
+        try {
+            return lock.tryLock(0, 10, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
     }
 
     @Override
     public void unlockOrder(Long orderId) {
-        String key = "payment_lock:order:" + orderId;
-        defaultRedisTemplate.delete(key);
+        String key = "payment:lock:" + orderId;
+        RLock lock = redissonClient.getLock(key);
+        if (lock.isHeldByCurrentThread()) {
+            lock.unlock();
+        }
     }
 }

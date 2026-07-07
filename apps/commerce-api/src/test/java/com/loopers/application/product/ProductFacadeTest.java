@@ -21,6 +21,7 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class ProductFacadeTest {
@@ -38,7 +39,35 @@ class ProductFacadeTest {
     private org.springframework.data.redis.core.RedisTemplate<String, String> defaultRedisTemplate;
 
     @Mock
+    private org.springframework.data.redis.core.ValueOperations<String, String> valueOperations;
+
+    @Mock
     private com.fasterxml.jackson.databind.ObjectMapper objectMapper;
+
+    @Mock
+    private com.loopers.domain.event.EventPublisher eventPublisher;
+
+    @Test
+    @DisplayName("상품 상세 조회 시 UserActionLogEvent(LOW)가 발행된다.")
+    void getProduct_ShouldPublishUserActionLogEvent() {
+        // given
+        Long productId = 1L;
+        BrandModel brand = new BrandModel("Nike");
+        org.springframework.test.util.ReflectionTestUtils.setField(brand, "id", 10L);
+        ProductModel product = new ProductModel(10L, "Air Max", new BigDecimal("1000.0000"));
+        org.springframework.test.util.ReflectionTestUtils.setField(product, "id", productId);
+
+        given(defaultRedisTemplate.opsForValue()).willReturn(valueOperations);
+        given(valueOperations.get("product:detail::" + productId)).willReturn(null);
+        given(productRepository.findById(productId)).willReturn(java.util.Optional.of(product));
+        given(brandRepository.findById(10L)).willReturn(java.util.Optional.of(brand));
+
+        // when
+        productFacade.getProduct(productId);
+
+        // then
+        verify(eventPublisher).publish(org.mockito.ArgumentMatchers.any(com.loopers.domain.user.UserActionLogEvent.class));
+    }
 
     @Test
     @DisplayName("상품 목록을 페이지 조회하여 브랜드명을 병합한 DTO 목록을 반환한다.")

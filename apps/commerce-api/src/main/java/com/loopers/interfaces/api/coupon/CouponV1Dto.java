@@ -16,4 +16,13 @@ public class CouponV1Dto {
             String status,
             LocalDateTime expiredAt
     ) {}
+
+    public record CouponRequestStatusResponse(
+            String requestId,
+            com.loopers.domain.coupon.CouponRequestStatus status
+    ) {}
+
+    public record CouponIssueResponse(
+            String requestId
+    ) {}
 }

@@ -1,5 +1,8 @@
 package com.loopers.application.order;
 
+import com.loopers.domain.event.EventPublisher;
+import com.loopers.domain.user.UserActionLevel;
+import com.loopers.domain.user.UserActionLogEvent;
 import com.loopers.domain.order.OrderModel;
 import com.loopers.domain.order.OrderItemModel;
 import com.loopers.domain.order.ProductSnapshot;
@@ -35,6 +38,7 @@ public class OrderFacade {
     private final PaymentFacade paymentFacade;
     private final IdempotencyManager idempotencyManager;
     private final org.springframework.transaction.support.TransactionTemplate transactionTemplate;
+    private final EventPublisher eventPublisher;
 
     public Long createOrder(Long userId, OrderCreateRequest request) {
         return createOrder(userId, request, null);
@@ -67,6 +71,7 @@ public class OrderFacade {
                 idempotencyManager.savePayloadHash(namespacedKey, currentHash);
                 idempotencyManager.saveSuccess(namespacedKey, orderId);
             }
+            eventPublisher.publish(new UserActionLogEvent(userId, "CREATE_ORDER", "{\"orderId\":" + orderId + "}", UserActionLevel.HIGH));
             return orderId;
         } finally {
             if (namespacedKey != null) {

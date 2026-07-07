@@ -81,4 +81,25 @@ class PaymentV1ControllerTest {
                 .andExpect(jsonPath("$.meta.errorCode").value("PAYMENT-503"))
                 .andExpect(jsonPath("$.meta.message").value("현재 외부 결제 시스템 장애로 결제가 일시 중단되었습니다."));
     }
+
+    @Test
+    @DisplayName("PG 결제 콜백(callback) 수신 시 HTTP 200 반환 및 Facade 호출 확인")
+    void completePaymentCallback_ApiSuccess() throws Exception {
+        // given
+        PaymentV1Dto.PaymentCallbackRequest request = new PaymentV1Dto.PaymentCallbackRequest(
+                500L,
+                "DONE",
+                "tx_abc_123"
+        );
+
+        // when & then
+        mockMvc.perform(post("/api/v1/payments/callback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.meta.result").value("SUCCESS"));
+
+        // verify that facade's completePayment is called
+        org.mockito.Mockito.verify(paymentFacade).completePayment(eq(500L), eq("tx_abc_123"));
+    }
 }

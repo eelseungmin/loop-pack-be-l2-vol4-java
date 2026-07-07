@@ -30,18 +30,21 @@ class CouponV1ControllerTest {
     private CouponFacade couponFacade;
 
     @Test
-    @DisplayName("쿠폰 발급 요청 시 200 OK를 반환하고 Facade를 호출한다.")
-    void issueCoupon_ShouldReturnOk() throws Exception {
+    @DisplayName("쿠폰 발급 요청 시 202 Accepted를 반환하고 Facade를 비동기로 호출한다.")
+    void issueCoupon_ShouldReturnAccepted() throws Exception {
         // given
         Long userId = 1L;
         Long couponId = 10L;
+        String mockRequestId = "test-req-uuid";
+        given(couponFacade.issueCouponAsync(userId, couponId)).willReturn(mockRequestId);
 
         // when & then
         mockMvc.perform(post("/api/v1/coupons/{couponId}/issue", couponId)
                         .header("X-Loopers-UserId", userId))
-                .andExpect(status().isOk());
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.requestId").value(mockRequestId));
 
-        verify(couponFacade).issueCoupon(userId, couponId);
+        verify(couponFacade).issueCouponAsync(userId, couponId);
     }
 
     @Test
@@ -65,5 +68,21 @@ class CouponV1ControllerTest {
                 .andExpect(jsonPath("$.data[0].status").value("AVAILABLE"));
 
         verify(couponFacade).getUsersCoupons(userId);
+    }
+
+    @Test
+    @DisplayName("쿠폰 발급 요청 상태 조회 시 200 OK와 상태를 반환한다.")
+    void getCouponRequestStatus_ShouldReturnOkAndStatus() throws Exception {
+        // given
+        String requestId = "test-req-123";
+        given(couponFacade.getRequestStatus(requestId)).willReturn(com.loopers.domain.coupon.CouponRequestStatus.IN_PROGRESS);
+
+        // when & then
+        mockMvc.perform(get("/api/v1/coupons/requests/{requestId}", requestId))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.requestId").value(requestId))
+                .andExpect(jsonPath("$.data.status").value("IN_PROGRESS"));
+
+        verify(couponFacade).getRequestStatus(requestId);
     }
 }

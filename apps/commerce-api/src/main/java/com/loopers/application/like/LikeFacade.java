@@ -1,6 +1,9 @@
 package com.loopers.application.like;
 
 import com.loopers.application.product.ProductRepository;
+import com.loopers.domain.event.EventPublisher;
+import com.loopers.domain.like.LikeCreatedEvent;
+import com.loopers.domain.like.LikeDeletedEvent;
 import com.loopers.domain.like.ProductLikeModel;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.support.error.CoreException;
@@ -18,6 +21,7 @@ public class LikeFacade {
 
     private final LikeRepository likeRepository;
     private final ProductRepository productRepository;
+    private final EventPublisher eventPublisher;
 
     public void addLike(Long userId, Long productId) {
         ProductModel product = productRepository.findByIdWithLock(productId)
@@ -29,7 +33,7 @@ public class LikeFacade {
 
         try {
             likeRepository.save(new ProductLikeModel(userId, productId));
-            product.increaseLikeCount();
+            eventPublisher.publish(new LikeCreatedEvent(userId, productId));
         } catch (org.springframework.dao.DataIntegrityViolationException e) {
             String message = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
             String rootMessage = e.getRootCause() != null && e.getRootCause().getMessage() != null 
@@ -51,7 +55,7 @@ public class LikeFacade {
 
         likeRepository.findByUserIdAndProductId(userId, productId).ifPresent(like -> {
             likeRepository.delete(like);
-            product.decreaseLikeCount();
+            eventPublisher.publish(new LikeDeletedEvent(userId, productId));
         });
     }
 }

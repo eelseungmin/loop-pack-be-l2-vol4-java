@@ -6,6 +6,11 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.context.properties.ConfigurationPropertiesScan;
 import java.util.TimeZone;
 
+import org.springframework.scheduling.annotation.EnableAsync;
+import org.springframework.scheduling.annotation.EnableScheduling;
+
+@EnableAsync
+@EnableScheduling
 @ConfigurationPropertiesScan
 @SpringBootApplication
 public class CommerceApiApplication {

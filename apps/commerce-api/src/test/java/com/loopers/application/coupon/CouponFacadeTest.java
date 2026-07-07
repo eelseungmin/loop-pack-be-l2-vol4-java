@@ -12,6 +12,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.loopers.testcontainers.RedisTestContainersConfig;
+import org.springframework.test.context.ContextConfiguration;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
@@ -20,6 +22,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @SpringBootTest
+@ContextConfiguration(initializers = RedisTestContainersConfig.class)
 class CouponFacadeTest {
 
     @Autowired
@@ -90,5 +93,75 @@ class CouponFacadeTest {
         CouponIssue saved = couponRepository.findIssueById(issue.getId()).orElseThrow();
         assertThat(saved.getUserId()).isEqualTo(userId);
         assertThat(saved.getCouponTemplateId()).isEqualTo(template.getId());
+    }
+
+    @Test
+    @DisplayName("쿠폰 템플릿에 총 수량과 발급 수량 필드가 정상적으로 저장되고 조회된다.")
+    void saveAndFindTemplate_WithQuantityFields() {
+        // given
+        CouponTemplate template = new CouponTemplate(
+            "선착순 100명 쿠폰", 
+            CouponType.FIXED, 
+            new BigDecimal("5000"), 
+            BigDecimal.ZERO, 
+            null, 
+            LocalDateTime.now().plusDays(10),
+            100, // totalQuantity
+            0 // issuedQuantity
+        );
+
+        // when
+        CouponTemplate saved = couponRepository.saveTemplate(template);
+
+        // then
+        assertThat(saved.getId()).isNotNull();
+        
+        CouponTemplate found = couponRepository.findTemplateById(saved.getId()).orElseThrow();
+        assertThat(found.getTotalQuantity()).isEqualTo(100);
+        assertThat(found.getIssuedQuantity()).isEqualTo(0);
+    }
+
+    @Autowired(required = false)
+    private CouponRequestRepository couponRequestRepository;
+
+    @Test
+    @DisplayName("요청 ID로 발급 상태를 저장하고 정상적으로 조회할 수 있다.")
+    void saveAndFindRequestStatus_ShouldSucceed() {
+        // given
+        String requestId = "test-req-999";
+        com.loopers.domain.coupon.CouponRequestStatus status = com.loopers.domain.coupon.CouponRequestStatus.IN_PROGRESS;
+
+        // when
+        couponRequestRepository.saveStatus(requestId, status);
+
+        // then
+        com.loopers.domain.coupon.CouponRequestStatus found = couponRequestRepository.findStatus(requestId).orElseThrow();
+        assertThat(found).isEqualTo(com.loopers.domain.coupon.CouponRequestStatus.IN_PROGRESS);
+    }
+
+    @org.springframework.test.context.bean.override.mockito.MockitoBean
+    private CouponEventPublisher couponEventPublisher;
+
+    @Test
+    @DisplayName("비동기 쿠폰 발급 요청 시, 1차 검증을 거쳐 상태를 IN_PROGRESS로 적재하고 Kafka 이벤트를 발행한다.")
+    void issueCouponAsync_ShouldSaveStatusAndPublishEvent() {
+        // given
+        Long userId = 2L;
+        CouponTemplate template = couponRepository.saveTemplate(
+            new CouponTemplate("선착순 100명 쿠폰", CouponType.FIXED, new BigDecimal("5000"), BigDecimal.ZERO, null, LocalDateTime.now().plusDays(10), 100, 0)
+        );
+
+        // when
+        String requestId = couponFacade.issueCouponAsync(userId, template.getId());
+
+        // then
+        assertThat(requestId).isNotNull();
+
+        // 1. Redis에 상태가 IN_PROGRESS로 저장되었는지 확인
+        com.loopers.domain.coupon.CouponRequestStatus status = couponRequestRepository.findStatus(requestId).orElseThrow();
+        assertThat(status).isEqualTo(com.loopers.domain.coupon.CouponRequestStatus.IN_PROGRESS);
+
+        // 2. Kafka 이벤트 발행이 정상적으로 호출되었는지 확인
+        org.mockito.Mockito.verify(couponEventPublisher).publishIssueRequest(requestId, userId, template.getId());
     }
 }

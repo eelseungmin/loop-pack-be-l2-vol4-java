@@ -26,4 +26,14 @@ public class PaymentV1Controller {
         );
         return ApiResponse.success(new PaymentV1Dto.PaymentResponse(paymentId));
     }
+
+    @PostMapping("/callback")
+    public ApiResponse<Object> processCallback(
+            @RequestBody PaymentV1Dto.PaymentCallbackRequest request
+    ) {
+        if ("DONE".equals(request.status())) {
+            paymentFacade.completePayment(request.paymentId(), request.transactionId());
+        }
+        return ApiResponse.success();
+    }
 }

@@ -8,6 +8,8 @@ import lombok.NoArgsConstructor;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import com.loopers.support.error.CoreException;
+import com.loopers.support.error.ErrorType;
 
 import org.hibernate.annotations.SQLDelete;
 import org.hibernate.annotations.SQLRestriction;
@@ -43,6 +45,12 @@ public class CouponTemplate extends BaseSoftDeleteEntity {
     @Column(name = "expired_at", nullable = false)
     private LocalDateTime expiredAt;
 
+    @Column(name = "total_quantity")
+    private Integer totalQuantity;
+
+    @Column(name = "issued_quantity")
+    private Integer issuedQuantity;
+
     public CouponTemplate(String name, CouponType type, BigDecimal value, BigDecimal minOrderAmount, BigDecimal maxDiscountAmount, LocalDateTime expiredAt) {
         this.name = name;
         this.type = type;
@@ -50,10 +58,30 @@ public class CouponTemplate extends BaseSoftDeleteEntity {
         this.minOrderAmount = minOrderAmount != null ? minOrderAmount : BigDecimal.ZERO;
         this.maxDiscountAmount = maxDiscountAmount;
         this.expiredAt = expiredAt;
+        this.totalQuantity = null;
+        this.issuedQuantity = 0;
+    }
+
+    public CouponTemplate(String name, CouponType type, BigDecimal value, BigDecimal minOrderAmount, BigDecimal maxDiscountAmount, LocalDateTime expiredAt, Integer totalQuantity, Integer issuedQuantity) {
+        this.name = name;
+        this.type = type;
+        this.value = value;
+        this.minOrderAmount = minOrderAmount != null ? minOrderAmount : BigDecimal.ZERO;
+        this.maxDiscountAmount = maxDiscountAmount;
+        this.expiredAt = expiredAt;
+        this.totalQuantity = totalQuantity;
+        this.issuedQuantity = issuedQuantity != null ? issuedQuantity : 0;
     }
 
     public boolean isExpired(LocalDateTime now) {
         return now.isAfter(expiredAt);
+    }
+
+    public void increaseIssuedQuantity() {
+        if (totalQuantity != null && issuedQuantity >= totalQuantity) {
+            throw new CoreException(ErrorType.COUPON_EXHAUSTED);
+        }
+        this.issuedQuantity++;
     }
 
     public void update(String name, CouponType type, BigDecimal value, BigDecimal minOrderAmount, BigDecimal maxDiscountAmount, LocalDateTime expiredAt) {

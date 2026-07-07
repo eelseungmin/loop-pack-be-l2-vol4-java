@@ -15,12 +15,13 @@ public class CouponV1Controller {
     private final CouponFacade couponFacade;
 
     @PostMapping("/coupons/{couponId}/issue")
-    public ApiResponse<Void> issueCoupon(
+    @org.springframework.web.bind.annotation.ResponseStatus(org.springframework.http.HttpStatus.ACCEPTED)
+    public ApiResponse<CouponV1Dto.CouponIssueResponse> issueCoupon(
             @RequestHeader("X-Loopers-UserId") Long userId,
             @PathVariable("couponId") Long couponId
     ) {
-        couponFacade.issueCoupon(userId, couponId);
-        return ApiResponse.success(null);
+        String requestId = couponFacade.issueCouponAsync(userId, couponId);
+        return ApiResponse.success(new CouponV1Dto.CouponIssueResponse(requestId));
     }
 
     @GetMapping("/users/me/coupons")
@@ -29,5 +30,13 @@ public class CouponV1Controller {
     ) {
         List<CouponV1Dto.UserCouponResponse> responses = couponFacade.getUsersCoupons(userId);
         return ApiResponse.success(responses);
+    }
+
+    @GetMapping("/coupons/requests/{requestId}")
+    public ApiResponse<CouponV1Dto.CouponRequestStatusResponse> getCouponRequestStatus(
+            @PathVariable("requestId") String requestId
+    ) {
+        com.loopers.domain.coupon.CouponRequestStatus status = couponFacade.getRequestStatus(requestId);
+        return ApiResponse.success(new CouponV1Dto.CouponRequestStatusResponse(requestId, status));
     }
 }

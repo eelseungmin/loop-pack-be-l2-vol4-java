@@ -8,7 +8,10 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import com.loopers.testcontainers.RedisTestContainersConfig;
+import org.springframework.test.context.ContextConfiguration;
 import org.springframework.boot.test.web.client.TestRestTemplate;
+
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.*;
 
@@ -19,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertAll;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@ContextConfiguration(initializers = RedisTestContainersConfig.class)
 class UserV1ApiE2ETest {
 
     private static final String ENDPOINT_SIGNUP = "/v1/users/signup";
