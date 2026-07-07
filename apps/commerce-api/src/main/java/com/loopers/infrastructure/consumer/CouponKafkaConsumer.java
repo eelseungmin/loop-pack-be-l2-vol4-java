@@ -29,10 +29,13 @@ public class CouponKafkaConsumer {
             @Header(KafkaHeaders.RECEIVED_KEY) String messageId,
             Acknowledgment acknowledgment) {
 
-        log.info("Received coupon issue request. messageId: {}", messageId);
+        log.info("Received coupon issue request. messageId (Kafka Key): {}", messageId);
 
-        String requestId = messageId;
+        String requestId = "unknown";
         try {
+            CouponIssueRequestEvent event = parsePayload(payload, CouponIssueRequestEvent.class);
+            requestId = event.requestId();
+
             CouponRequestStatus status = couponRequestRepository.findStatus(requestId).orElse(null);
 
             if (status == null) {
@@ -46,8 +49,6 @@ public class CouponKafkaConsumer {
                 acknowledgment.acknowledge();
                 return;
             }
-
-            CouponIssueRequestEvent event = parsePayload(payload, CouponIssueRequestEvent.class);
 
             couponFacade.issueCoupon(event.userId(), event.couponId());
 

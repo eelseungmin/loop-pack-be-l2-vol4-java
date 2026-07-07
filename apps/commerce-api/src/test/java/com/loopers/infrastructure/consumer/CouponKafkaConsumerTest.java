@@ -64,7 +64,7 @@ class CouponKafkaConsumerTest {
         Acknowledgment acknowledgment = mock(Acknowledgment.class);
 
         // when
-        couponKafkaConsumer.handleCouponIssueRequest(payload, requestId, acknowledgment);
+        couponKafkaConsumer.handleCouponIssueRequest(payload, String.valueOf(userId), acknowledgment);
 
         // then
         // 1. Redis 상태가 SUCCESS 인지 확인
@@ -98,7 +98,7 @@ class CouponKafkaConsumerTest {
         Acknowledgment acknowledgment = mock(Acknowledgment.class);
 
         // when
-        couponKafkaConsumer.handleCouponIssueRequest(payload, requestId, acknowledgment);
+        couponKafkaConsumer.handleCouponIssueRequest(payload, String.valueOf(userId), acknowledgment);
 
         // then
         // 1. Redis 상태가 FAILED 인지 확인
