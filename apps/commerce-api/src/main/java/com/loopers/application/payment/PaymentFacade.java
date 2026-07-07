@@ -216,7 +216,7 @@ public class PaymentFacade {
         }
     }
 
-    public void completePayment(Long paymentId) {
+    public void completePayment(Long paymentId, String transactionId) {
         PaymentModel initial = paymentRepository.findById(paymentId)
                 .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "결제 내역을 찾을 수 없습니다."));
 
@@ -240,7 +240,7 @@ public class PaymentFacade {
                     return;
                 }
 
-                payment.approve("tx-callback", java.time.LocalDateTime.now());
+                payment.approve(transactionId, java.time.LocalDateTime.now());
                 paymentRepository.save(payment);
 
                 com.loopers.domain.order.OrderModel order = orderRepository.findById(payment.getOrderId())

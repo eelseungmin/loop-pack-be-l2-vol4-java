@@ -405,6 +405,27 @@ class PaymentFacadeTest {
     }
 
     @Test
+    @DisplayName("completePayment 호출 시 정상적으로 transactionId가 저장되고 APPROVED 상태로 변경되며 주문도 COMPLETED 처리된다.")
+    void completePayment_Success_ShouldSaveTransactionId() {
+        // given
+        var order = new com.loopers.domain.order.OrderModel(1000L, null, new BigDecimal("5000"), BigDecimal.ZERO, new BigDecimal("5000"));
+        var savedOrder = orderRepository.save(order);
+
+        var payment = new PaymentModel(savedOrder.getId(), PaymentMethod.CARD, new BigDecimal("5000"));
+        var savedPayment = paymentRepository.save(payment);
+
+        String transactionId = "tx-real-123";
+
+        // when
+        paymentFacade.completePayment(savedPayment.getId(), transactionId);
+
+        // then
+        var updatedPayment = paymentRepository.findById(savedPayment.getId()).orElseThrow();
+        assertThat(updatedPayment.getStatus()).isEqualTo(PaymentStatus.APPROVED);
+        assertThat(updatedPayment.getTransactionId()).isEqualTo(transactionId);
+    }
+
+    @Test
     @DisplayName("결제 콜백(completePayment)과 스케줄러 보정(retryOrCompensatePayment)이 동시에 실행될 때, 하나만 성공하고 하나는 무시된다.")
     void completePayment_And_RetryOrCompensate_Concurrent_ShouldHandleSafely() throws InterruptedException {
         // given
@@ -426,7 +447,7 @@ class PaymentFacadeTest {
         executorService.submit(() -> {
             try {
                 latch.await();
-                paymentFacade.completePayment(savedPayment.getId());
+                paymentFacade.completePayment(savedPayment.getId(), "tx-concurrent-123");
             } catch (Exception e) {
             } finally {
                 doneLatch.countDown();

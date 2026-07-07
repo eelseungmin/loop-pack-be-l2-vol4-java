@@ -100,6 +100,6 @@ class PaymentV1ControllerTest {
                 .andExpect(jsonPath("$.meta.result").value("SUCCESS"));
 
         // verify that facade's completePayment is called
-        org.mockito.Mockito.verify(paymentFacade).completePayment(eq(500L));
+        org.mockito.Mockito.verify(paymentFacade).completePayment(eq(500L), eq("tx_abc_123"));
     }
 }

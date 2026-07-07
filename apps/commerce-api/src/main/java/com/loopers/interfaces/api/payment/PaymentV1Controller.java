@@ -32,7 +32,7 @@ public class PaymentV1Controller {
             @RequestBody PaymentV1Dto.PaymentCallbackRequest request
     ) {
         if ("DONE".equals(request.status())) {
-            paymentFacade.completePayment(request.paymentId());
+            paymentFacade.completePayment(request.paymentId(), request.transactionId());
         }
         return ApiResponse.success();
     }
