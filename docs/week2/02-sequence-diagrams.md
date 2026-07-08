@@ -614,3 +614,35 @@ sequenceDiagram
         end
     end
 ```
+
+```mermaid
+sequenceDiagram
+    title 입장 토큰 검증 및 결제 실패 시 TTL 유지 (재시도) 시나리오
+    actor User
+    participant Interceptor as TokenInterceptor
+    participant Facade as OrderFacade / PaymentFacade
+    participant Redis
+    participant DB
+
+    %% 1. 정상 진입 시도
+    User->>Interceptor: POST /api/v1/orders
+    Interceptor->>Redis: SISMEMBER active_set {userId}
+    
+    alt 토큰 없음 (대기 중 또는 미진입)
+        Redis-->>Interceptor: false
+        Interceptor-->>User: 401 Unauthorized (또는 403 Forbidden)
+    else 토큰 있음 (Active)
+        Redis-->>Interceptor: true
+        Interceptor->>Facade: 요청 전달
+        Facade->>DB: 주문 및 결제 처리 시도
+        
+        alt 결제 실패 (잔고 부족 등)
+            Facade-->>User: 400 Bad Request (결제 실패)
+            Note right of User: 실패해도 Redis의 토큰은 파기되지 않음.<br>TTL(예: 5분) 내에서 재시도 가능.
+        else 결제 성공
+            Facade->>DB: 상태 업데이트 (APPROVED)
+            Facade->>Redis: SREM active_set {userId} (토큰 회수)
+            Facade-->>User: 200 OK (결제 완료)
+        end
+    end
+```
