@@ -545,3 +545,72 @@ sequenceDiagram
         end
     end
 ```
+
+```mermaid
+sequenceDiagram
+    title 글로벌 대기열 진입 및 순번 조회 API
+    actor User
+    participant Controller as QueueController
+    participant Facade as QueueFacade
+    participant Redis
+
+    %% 1. 대기열 진입
+    User->>Controller: POST /api/v1/queue/enter
+    Controller->>Facade: 대기열 진입 요청 (userId)
+    
+    Facade->>Redis: SISMEMBER active_set {userId}
+    alt 이미 Active 상태
+        Redis-->>Facade: true
+        Facade-->>Controller: 이미 통과됨 (ACTIVE)
+        Controller-->>User: 200 OK (상태: ACTIVE)
+    else 대기 상태
+        Facade->>Redis: ZADD waiting_queue NX {timestamp} {userId}
+        Note right of Redis: NX 옵션으로 중복 진입 방지
+        Facade->>Redis: ZRANK waiting_queue {userId}
+        Redis-->>Facade: 순번 반환
+        Facade->>Redis: ZCARD waiting_queue
+        Redis-->>Facade: 전체 대기 인원 반환
+        Note right of Facade: 예상 대기시간 = 순번 / 고정처리량 계산
+        Facade-->>Controller: 순번, 대기시간, 전체인원
+        Controller-->>User: 200 OK (상태: WAITING, 순번 등)
+    end
+
+    %% 2. 순번 폴링 조회
+    User->>Controller: GET /api/v1/queue/position
+    Controller->>Facade: 순번 조회 요청 (userId)
+    
+    Facade->>Redis: SISMEMBER active_set {userId}
+    alt Active 상태
+        Redis-->>Facade: true
+        Facade-->>Controller: 상태: ACTIVE 반환
+        Controller-->>User: 200 OK (상태: ACTIVE, 서비스 이용 가능)
+    else Waiting 상태
+        Facade->>Redis: ZRANK waiting_queue {userId}
+        Redis-->>Facade: 순번
+        Facade->>Redis: ZCARD waiting_queue
+        Redis-->>Facade: 전체 대기 인원
+        Facade-->>Controller: 계산된 대기시간 및 상태 반환
+        Controller-->>User: 200 OK (순번, 시간 갱신)
+    end
+```
+
+```mermaid
+sequenceDiagram
+    title 대기열 상태 전환 스케줄러 (Waiting -> Active)
+    participant Scheduler as QueueScheduler
+    participant Facade as QueueFacade
+    participant Redis
+
+    loop 주기적 실행 (예: 1초마다)
+        Scheduler->>Facade: 대기열 통과 처리 실행
+        Facade->>Redis: ZPOPMIN waiting_queue N (N명 꺼내기)
+        Redis-->>Facade: 통과될 N명의 userId 목록
+        
+        alt 통과 대상이 있을 경우
+            loop 각 userId 별로
+                Facade->>Redis: SADD active_set {userId}
+                Facade->>Redis: EXPIRE active_set {TTL} (또는 userId 단위 Key에 TTL 설정)
+            end
+        end
+    end
+```
