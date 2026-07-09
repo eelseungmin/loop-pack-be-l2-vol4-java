@@ -575,22 +575,30 @@ sequenceDiagram
         Controller-->>User: 200 OK (상태: WAITING, 순번 등)
     end
 
-    %% 2. 순번 폴링 조회
-    User->>Controller: GET /api/v1/queue/position
-    Controller->>Facade: 순번 조회 요청 (userId)
-    
-    Facade->>Redis: SISMEMBER active_set {userId}
-    alt Active 상태
-        Redis-->>Facade: true
-        Facade-->>Controller: 상태: ACTIVE 반환
-        Controller-->>User: 200 OK (상태: ACTIVE, 서비스 이용 가능)
-    else Waiting 상태
-        Facade->>Redis: ZRANK waiting_queue {userId}
-        Redis-->>Facade: 순번
-        Facade->>Redis: ZCARD waiting_queue
-        Redis-->>Facade: 전체 대기 인원
-        Facade-->>Controller: 계산된 대기시간 및 상태 반환
-        Controller-->>User: 200 OK (순번, 시간 갱신)
+    %% 2. 순번 폴링 조회 (클라이언트 고정 주기)
+    loop Every 3 seconds (Fixed Polling)
+        User->>Controller: GET /api/v1/queue/position
+        
+        alt Rate Limit 초과 시 (서버 방어)
+            Controller-->>User: 429 Too Many Requests
+        else 정상 진입
+            Controller->>Facade: 순번 조회 요청 (userId)
+            
+            Facade->>Redis: SISMEMBER active_set {userId}
+            alt Active 상태 (스케줄러가 토큰 발급 완료함)
+                Redis-->>Facade: true
+                Facade-->>Controller: 상태: ACTIVE 및 입장 토큰 반환
+                Controller-->>User: 200 OK (상태: ACTIVE, token: "...", 서비스 이용 가능)
+            else Waiting 상태
+                Facade->>Redis: ZRANK waiting_queue {userId}
+                Redis-->>Facade: 순번
+                Facade->>Redis: ZCARD waiting_queue
+                Redis-->>Facade: 전체 대기 인원
+                Note right of Facade: 예상 대기시간 = 순번 / 초당 고정 처리량(N)
+                Facade-->>Controller: 계산된 예상 대기시간 및 상태 반환
+                Controller-->>User: 200 OK (상태: WAITING, 순번, 예상 대기시간 갱신)
+            end
+        end
     end
 ```
 
