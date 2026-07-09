@@ -3,6 +3,7 @@ package com.loopers.application.payment;
 import com.loopers.application.coupon.CouponRepository;
 import com.loopers.application.order.OrderRepository;
 import com.loopers.application.product.ProductFacade;
+import com.loopers.application.queue.QueueRepository;
 import com.loopers.domain.event.EventPublisher;
 import com.loopers.domain.payment.PaymentMethod;
 import com.loopers.domain.payment.PaymentModel;
@@ -39,6 +40,7 @@ public class PaymentFacade {
     private final io.github.resilience4j.circuitbreaker.CircuitBreaker pgCircuitBreaker;
     private final EventPublisher eventPublisher;
     private final org.springframework.transaction.support.TransactionTemplate transactionTemplate;
+    private final QueueRepository queueRepository;
 
     public PaymentStatus getPaymentStatus(Long paymentId) {
         return paymentRepository.findById(paymentId)
@@ -93,6 +95,13 @@ public class PaymentFacade {
                         .map(com.loopers.domain.order.OrderModel::getUserId)
                         .orElse(null);
                 eventPublisher.publish(new PaymentCompletedEvent(paymentId, orderId, userId, amount));
+                if (userId != null) {
+                    try {
+                        queueRepository.removeActive(userId);
+                    } catch (Exception ex) {
+                        log.error("Failed to remove active queue token for user: {}", userId, ex);
+                    }
+                }
             });
         } catch (Exception e) {
             log.warn("Payment PG request timeout or failed, keeping READY status for payment id: {}", paymentId, e);
@@ -157,6 +166,11 @@ public class PaymentFacade {
             paymentTempStorage.deleteRetryKey(paymentId);
 
             eventPublisher.publish(new PaymentCompletedEvent(paymentId, payment.getOrderId(), order.getUserId(), payment.getAmount()));
+            try {
+                queueRepository.removeActive(order.getUserId());
+            } catch (Exception ex) {
+                log.error("Failed to remove active queue token for user: {}", order.getUserId(), ex);
+            }
         } else {
             Integer count = paymentTempStorage.getRetryCount(paymentId);
             if (count == null) {
@@ -251,6 +265,11 @@ public class PaymentFacade {
                 paymentTempStorage.deleteRetryKey(paymentId);
 
                 eventPublisher.publish(new PaymentCompletedEvent(paymentId, payment.getOrderId(), order.getUserId(), payment.getAmount()));
+                try {
+                    queueRepository.removeActive(order.getUserId());
+                } catch (Exception ex) {
+                    log.error("Failed to remove active queue token for user: {}", order.getUserId(), ex);
+                }
             });
         } finally {
             paymentTempStorage.unlockOrder(orderId);
