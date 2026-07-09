@@ -66,6 +66,9 @@ class PaymentFacadeTest {
     @Autowired
     private DatabaseCleanUp databaseCleanUp;
 
+    @Autowired
+    private com.loopers.application.queue.QueueRepository queueRepository;
+
     @AfterEach
     void tearDown() {
         databaseCleanUp.truncateAllTables();
@@ -73,6 +76,10 @@ class PaymentFacadeTest {
         var keys = defaultRedisTemplate.keys("payment_retry:*");
         if (keys != null && !keys.isEmpty()) {
             defaultRedisTemplate.delete(keys);
+        }
+        // Clear active queue tokens
+        for (long i = 1; i <= 200; i++) {
+            queueRepository.removeActive(i);
         }
     }
 
@@ -502,5 +509,35 @@ class PaymentFacadeTest {
         // 보상 이벤트를 비동기로 처리하기 위해 발행했는지 확인
         Mockito.verify(eventPublisher, Mockito.times(1))
                 .publish(Mockito.any(com.loopers.domain.payment.PaymentFailedEvent.class));
+    }
+
+    @Test
+    @DisplayName("결제가 완전히 성공(APPROVED) 완료되면 해당 유저의 Active 대기열 토큰이 삭제된다.")
+    void processPayment_shouldRemoveActiveQueueTokenOnSuccess() {
+        // given
+        Long userId = 100L;
+        String token = "active-token-uuid-12345";
+        queueRepository.makeActive(userId, token, 300);
+        assertThat(queueRepository.getActiveToken(userId)).isPresent();
+
+        com.loopers.domain.brand.BrandModel brand = brandRepository.save(new com.loopers.domain.brand.BrandModel("Nike"));
+        com.loopers.domain.product.ProductModel product = new com.loopers.domain.product.ProductModel(brand.getId(), "Air Max", new BigDecimal("100000"));
+        product.assignStock(10);
+        productRepository.save(product);
+
+        com.loopers.domain.order.OrderModel order = new com.loopers.domain.order.OrderModel(userId, null, new BigDecimal("100000"), BigDecimal.ZERO, new BigDecimal("100000"));
+        com.loopers.domain.order.ProductSnapshot snapshot = new com.loopers.domain.order.ProductSnapshot(product.getName(), product.getPrice(), "Nike");
+        com.loopers.domain.order.OrderItemModel orderItem = new com.loopers.domain.order.OrderItemModel(order, product.getId(), snapshot, 1);
+        order.addItem(orderItem);
+        orderRepository.save(order);
+
+        Mockito.doReturn(new PaymentGatewayResult("tx-12345", LocalDateTime.now()))
+                .when(paymentGateway).requestPayment(Mockito.eq(order.getId()), Mockito.any(), Mockito.any());
+
+        // when
+        paymentFacade.processPayment(order.getId(), PaymentMethod.CARD, new BigDecimal("100000"));
+
+        // then
+        assertThat(queueRepository.getActiveToken(userId)).isEmpty();
     }
 }
