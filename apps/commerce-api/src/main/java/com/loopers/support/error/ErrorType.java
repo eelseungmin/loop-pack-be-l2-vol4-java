@@ -37,7 +37,10 @@ public enum ErrorType {
     ORDER_NOT_FOUND(HttpStatus.NOT_FOUND, "ORDER-001", "주문 내역을 찾을 수 없습니다."),
 
     /** 쿠폰 관련 에러 */
-    COUPON_EXHAUSTED(HttpStatus.CONFLICT, "COUPON-001", "쿠폰 수량이 모두 소진되었습니다.");
+    COUPON_EXHAUSTED(HttpStatus.CONFLICT, "COUPON-001", "쿠폰 수량이 모두 소진되었습니다."),
+
+    /** 대기열 관련 에러 */
+    QUEUE_TOKEN_INVALID(HttpStatus.UNAUTHORIZED, "QUEUE-001", "유효한 대기열 토큰이 존재하지 않습니다.");
 
     private final HttpStatus status;
     private final String code;
