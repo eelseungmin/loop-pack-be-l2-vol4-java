@@ -575,8 +575,8 @@ sequenceDiagram
         Controller-->>User: 200 OK (상태: WAITING, 순번 등)
     end
 
-    %% 2. 순번 폴링 조회 (클라이언트 고정 주기)
-    loop Every 3 seconds (Fixed Polling)
+    %% 2. 순번 폴링 조회 (클라이언트 동적 주기)
+    loop Dynamic Polling (1~5 seconds)
         User->>Controller: GET /api/v1/queue/position
         
         alt Rate Limit 초과 시 (서버 방어)
