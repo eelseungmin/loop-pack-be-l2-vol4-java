@@ -8,7 +8,8 @@ public class QueueV1Dto {
             QueueStatus status,
             Long userId,
             Long rank,
-            Long estimatedWaitTime
+            Long estimatedWaitTime,
+            Long pollingInterval
     ) {}
 
     public record QueuePositionResponse(
@@ -16,6 +17,7 @@ public class QueueV1Dto {
             Long userId,
             Long rank,
             Long estimatedWaitTime,
+            Long pollingInterval,
             String token
     ) {}
 }

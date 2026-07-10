@@ -22,7 +22,8 @@ public class QueueV1Controller {
                 position.status(),
                 position.userId(),
                 position.rank(),
-                position.estimatedWaitTime()
+                position.estimatedWaitTime(),
+                position.pollingInterval()
         ));
     }
 
@@ -36,6 +37,7 @@ public class QueueV1Controller {
                 position.userId(),
                 position.rank(),
                 position.estimatedWaitTime(),
+                position.pollingInterval(),
                 position.token()
         ));
     }
