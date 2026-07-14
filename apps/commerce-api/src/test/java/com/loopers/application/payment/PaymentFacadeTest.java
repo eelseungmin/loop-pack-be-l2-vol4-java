@@ -66,6 +66,9 @@ class PaymentFacadeTest {
     @Autowired
     private DatabaseCleanUp databaseCleanUp;
 
+    @Autowired
+    private com.loopers.application.queue.QueueRepository queueRepository;
+
     @AfterEach
     void tearDown() {
         databaseCleanUp.truncateAllTables();
@@ -73,6 +76,10 @@ class PaymentFacadeTest {
         var keys = defaultRedisTemplate.keys("payment_retry:*");
         if (keys != null && !keys.isEmpty()) {
             defaultRedisTemplate.delete(keys);
+        }
+        // Clear active queue tokens
+        for (long i = 1; i <= 200; i++) {
+            queueRepository.removeActive(i);
         }
     }
 
@@ -426,6 +433,30 @@ class PaymentFacadeTest {
     }
 
     @Test
+    @DisplayName("이미 처리된(APPROVED) 결제에 대해 중복 콜백(completePayment) 시도 시 무시하고 이벤트를 재발행하지 않는다.")
+    void completePayment_AlreadyProcessed_ShouldIgnore() {
+        // given
+        var order = new com.loopers.domain.order.OrderModel(1001L, null, new BigDecimal("5000"), BigDecimal.ZERO, new BigDecimal("5000"));
+        var savedOrder = orderRepository.save(order);
+
+        var payment = new PaymentModel(savedOrder.getId(), PaymentMethod.CARD, new BigDecimal("5000"));
+        payment.approve("tx-already-123", LocalDateTime.now());
+        var savedPayment = paymentRepository.save(payment);
+
+        // when
+        paymentFacade.completePayment(savedPayment.getId(), "tx-already-123");
+
+        // then
+        // 상태 변화 없음 검증
+        var updatedPayment = paymentRepository.findById(savedPayment.getId()).orElseThrow();
+        assertThat(updatedPayment.getStatus()).isEqualTo(PaymentStatus.APPROVED);
+
+        // 중복 이벤트가 발행되지 않아야 함 (Mockito verify 0회)
+        Mockito.verify(eventPublisher, Mockito.never())
+                .publish(Mockito.any(com.loopers.domain.payment.PaymentCompletedEvent.class));
+    }
+
+    @Test
     @DisplayName("결제 콜백(completePayment)과 스케줄러 보정(retryOrCompensatePayment)이 동시에 실행될 때, 하나만 성공하고 하나는 무시된다.")
     void completePayment_And_RetryOrCompensate_Concurrent_ShouldHandleSafely() throws InterruptedException {
         // given
@@ -502,5 +533,96 @@ class PaymentFacadeTest {
         // 보상 이벤트를 비동기로 처리하기 위해 발행했는지 확인
         Mockito.verify(eventPublisher, Mockito.times(1))
                 .publish(Mockito.any(com.loopers.domain.payment.PaymentFailedEvent.class));
+    }
+
+    @Test
+    @DisplayName("결제가 완전히 성공(APPROVED) 완료되면 해당 유저의 Active 대기열 토큰이 삭제된다.")
+    void processPayment_shouldRemoveActiveQueueTokenOnSuccess() {
+        // given
+        Long userId = 100L;
+        String token = "active-token-uuid-12345";
+        queueRepository.makeActive(userId, token, 300);
+        assertThat(queueRepository.getActiveToken(userId)).isPresent();
+
+        com.loopers.domain.brand.BrandModel brand = brandRepository.save(new com.loopers.domain.brand.BrandModel("Nike"));
+        com.loopers.domain.product.ProductModel product = new com.loopers.domain.product.ProductModel(brand.getId(), "Air Max", new BigDecimal("100000"));
+        product.assignStock(10);
+        productRepository.save(product);
+
+        com.loopers.domain.order.OrderModel order = new com.loopers.domain.order.OrderModel(userId, null, new BigDecimal("100000"), BigDecimal.ZERO, new BigDecimal("100000"));
+        com.loopers.domain.order.ProductSnapshot snapshot = new com.loopers.domain.order.ProductSnapshot(product.getName(), product.getPrice(), "Nike");
+        com.loopers.domain.order.OrderItemModel orderItem = new com.loopers.domain.order.OrderItemModel(order, product.getId(), snapshot, 1);
+        order.addItem(orderItem);
+        orderRepository.save(order);
+
+        Mockito.doReturn(new PaymentGatewayResult("tx-12345", LocalDateTime.now()))
+                .when(paymentGateway).requestPayment(Mockito.eq(order.getId()), Mockito.any(), Mockito.any());
+
+        // when
+        paymentFacade.processPayment(order.getId(), PaymentMethod.CARD, new BigDecimal("100000"));
+
+        // then
+        assertThat(queueRepository.getActiveToken(userId)).isEmpty();
+    }
+
+    @Test
+    @DisplayName("결제가 예외로 인해 지연되거나 실패하더라도 유저의 Active 대기열 토큰은 유지된다.")
+    void processPayment_Failure_ShouldKeepActiveQueueToken() {
+        // given
+        Long userId = 199L;
+        String token = "active-token-uuid-fail";
+        queueRepository.makeActive(userId, token, 300);
+        assertThat(queueRepository.getActiveToken(userId)).isPresent();
+
+        com.loopers.domain.brand.BrandModel brand = brandRepository.save(new com.loopers.domain.brand.BrandModel("Nike"));
+        com.loopers.domain.product.ProductModel product = new com.loopers.domain.product.ProductModel(brand.getId(), "Air Max Fail", new BigDecimal("100000"));
+        product.assignStock(10);
+        productRepository.save(product);
+
+        com.loopers.domain.order.OrderModel order = new com.loopers.domain.order.OrderModel(userId, null, new BigDecimal("100000"), BigDecimal.ZERO, new BigDecimal("100000"));
+        com.loopers.domain.order.ProductSnapshot snapshot = new com.loopers.domain.order.ProductSnapshot(product.getName(), product.getPrice(), "Nike");
+        com.loopers.domain.order.OrderItemModel orderItem = new com.loopers.domain.order.OrderItemModel(order, product.getId(), snapshot, 1);
+        order.addItem(orderItem);
+        orderRepository.save(order);
+
+        Mockito.doThrow(new CoreException(ErrorType.INTERNAL_ERROR, "PG Failed"))
+                .when(paymentGateway).requestPayment(Mockito.eq(order.getId()), Mockito.any(), Mockito.any());
+
+        // when
+        paymentFacade.processPayment(order.getId(), PaymentMethod.CARD, new BigDecimal("100000"));
+
+        // then
+        assertThat(queueRepository.getActiveToken(userId)).isPresent();
+        assertThat(queueRepository.getActiveToken(userId).get()).isEqualTo(token);
+    }
+
+    @Test
+    @DisplayName("스케줄러에 의한 결제 보상 처리로 인해 최종 FAILED 상태가 되더라도 유저의 Active 토큰은 유지된다.")
+    void retryOrCompensatePayment_Failed_ShouldKeepActiveQueueToken() {
+        // given
+        Long userId = 200L;
+        String token = "active-token-uuid-fail2";
+        queueRepository.makeActive(userId, token, 300);
+
+        var order = new com.loopers.domain.order.OrderModel(userId, null, new BigDecimal("5000"), BigDecimal.ZERO, new BigDecimal("5000"));
+        var savedOrder = orderRepository.save(order);
+
+        var payment = new PaymentModel(savedOrder.getId(), PaymentMethod.CARD, new BigDecimal("5000"));
+        var savedPayment = paymentRepository.save(payment);
+
+        String redisKey = "payment_retry:" + savedPayment.getId();
+        defaultRedisTemplate.opsForValue().set(redisKey, "2");
+
+        Mockito.doReturn(new PaymentGateway.PaymentGatewayQueryResult(PaymentGatewayStatus.PENDING, null, null))
+                .when(paymentGateway).queryPaymentStatus(savedOrder.getId());
+
+        // when
+        paymentFacade.retryOrCompensatePayment(savedPayment.getId());
+
+        // then
+        var updatedPayment = paymentRepository.findById(savedPayment.getId()).orElseThrow();
+        assertThat(updatedPayment.getStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(queueRepository.getActiveToken(userId)).isPresent();
+        assertThat(queueRepository.getActiveToken(userId).get()).isEqualTo(token);
     }
 }

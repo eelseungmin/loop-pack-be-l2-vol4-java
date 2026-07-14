@@ -1,5 +1,7 @@
 package com.loopers.interfaces.api.order;
 
+import com.loopers.application.queue.QueueFacade;
+import com.loopers.interfaces.api.ApiResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.loopers.application.order.OrderFacade;
 import com.loopers.domain.payment.PaymentMethod;
@@ -32,21 +34,27 @@ class OrderV1ControllerTest {
     @MockBean
     private OrderFacade orderFacade;
 
+    @MockBean
+    private QueueFacade queueFacade;
+
     @Test
     @DisplayName("주문 생성(orders) 요청 시 HTTP 200과 orderId가 반환된다.")
     void createOrder_ApiSuccess() throws Exception {
         // given
         Long userId = 1L;
+        String token = "valid-token";
         OrderV1Dto.OrderCreateRequest request = new OrderV1Dto.OrderCreateRequest(
                 List.of(new OrderV1Dto.ItemRequest(10L, 2)),
                 42L
         );
 
+        given(queueFacade.isValidActiveToken(eq(userId), eq(token))).willReturn(true);
         given(orderFacade.createOrder(eq(userId), any())).willReturn(100L);
 
         // when & then
         mockMvc.perform(post("/api/v1/orders")
                         .header("X-Loopers-UserId", userId)
+                        .header("X-Queue-Token", token)
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())

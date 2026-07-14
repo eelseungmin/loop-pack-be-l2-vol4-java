@@ -29,11 +29,10 @@ public class PaymentV1Controller {
 
     @PostMapping("/callback")
     public ApiResponse<Object> processCallback(
-            @RequestBody PaymentV1Dto.PaymentCallbackRequest request
+            @RequestBody PaymentV1Dto.PaymentCallbackRequest request,
+            @org.springframework.web.bind.annotation.RequestHeader(value = "X-PG-Signature", required = false) String signature
     ) {
-        if ("DONE".equals(request.status())) {
-            paymentFacade.completePayment(request.paymentId(), request.transactionId());
-        }
+        paymentFacade.processCallback(request.paymentId(), request.transactionId(), request.status(), signature);
         return ApiResponse.success();
     }
 }

@@ -83,7 +83,7 @@ class PaymentV1ControllerTest {
     }
 
     @Test
-    @DisplayName("PG 결제 콜백(callback) 수신 시 HTTP 200 반환 및 Facade 호출 확인")
+    @DisplayName("PG 결제 콜백(callback) 수신 시 올바른 서명이면 HTTP 200 반환 및 Facade 호출 확인")
     void completePaymentCallback_ApiSuccess() throws Exception {
         // given
         PaymentV1Dto.PaymentCallbackRequest request = new PaymentV1Dto.PaymentCallbackRequest(
@@ -95,11 +95,34 @@ class PaymentV1ControllerTest {
         // when & then
         mockMvc.perform(post("/api/v1/payments/callback")
                         .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-PG-Signature", "valid-signature-123")
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.meta.result").value("SUCCESS"));
 
-        // verify that facade's completePayment is called
-        org.mockito.Mockito.verify(paymentFacade).completePayment(eq(500L), eq("tx_abc_123"));
+        // verify that facade's processCallback is called
+        org.mockito.Mockito.verify(paymentFacade).processCallback(eq(500L), eq("tx_abc_123"), eq("DONE"), eq("valid-signature-123"));
+    }
+
+    @Test
+    @DisplayName("위조된 PG 결제 콜백(잘못된 서명) 수신 시 UNAUTHORIZED 에러를 반환하고 처리하지 않는다.")
+    void completePaymentCallback_InvalidSignature_Returns401() throws Exception {
+        // given
+        PaymentV1Dto.PaymentCallbackRequest request = new PaymentV1Dto.PaymentCallbackRequest(
+                500L,
+                "DONE",
+                "tx_abc_123"
+        );
+
+        org.mockito.Mockito.doThrow(new com.loopers.support.error.CoreException(com.loopers.support.error.ErrorType.UNAUTHORIZED, "Invalid PG Signature"))
+                .when(paymentFacade).processCallback(eq(500L), eq("tx_abc_123"), eq("DONE"), eq("invalid-fake-signature"));
+
+        // when & then
+        mockMvc.perform(post("/api/v1/payments/callback")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("X-PG-Signature", "invalid-fake-signature")
+                        .content(objectMapper.writeValueAsString(request)))
+                .andExpect(status().isUnauthorized())
+                .andExpect(jsonPath("$.meta.result").value("FAIL"));
     }
 }
