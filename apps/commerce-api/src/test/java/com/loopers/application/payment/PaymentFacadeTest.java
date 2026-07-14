@@ -433,6 +433,30 @@ class PaymentFacadeTest {
     }
 
     @Test
+    @DisplayName("이미 처리된(APPROVED) 결제에 대해 중복 콜백(completePayment) 시도 시 무시하고 이벤트를 재발행하지 않는다.")
+    void completePayment_AlreadyProcessed_ShouldIgnore() {
+        // given
+        var order = new com.loopers.domain.order.OrderModel(1001L, null, new BigDecimal("5000"), BigDecimal.ZERO, new BigDecimal("5000"));
+        var savedOrder = orderRepository.save(order);
+
+        var payment = new PaymentModel(savedOrder.getId(), PaymentMethod.CARD, new BigDecimal("5000"));
+        payment.approve("tx-already-123", LocalDateTime.now());
+        var savedPayment = paymentRepository.save(payment);
+
+        // when
+        paymentFacade.completePayment(savedPayment.getId(), "tx-already-123");
+
+        // then
+        // 상태 변화 없음 검증
+        var updatedPayment = paymentRepository.findById(savedPayment.getId()).orElseThrow();
+        assertThat(updatedPayment.getStatus()).isEqualTo(PaymentStatus.APPROVED);
+
+        // 중복 이벤트가 발행되지 않아야 함 (Mockito verify 0회)
+        Mockito.verify(eventPublisher, Mockito.never())
+                .publish(Mockito.any(com.loopers.domain.payment.PaymentCompletedEvent.class));
+    }
+
+    @Test
     @DisplayName("결제 콜백(completePayment)과 스케줄러 보정(retryOrCompensatePayment)이 동시에 실행될 때, 하나만 성공하고 하나는 무시된다.")
     void completePayment_And_RetryOrCompensate_Concurrent_ShouldHandleSafely() throws InterruptedException {
         // given
