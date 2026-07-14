@@ -100,8 +100,8 @@ class PaymentV1ControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.meta.result").value("SUCCESS"));
 
-        // verify that facade's completePayment is called
-        org.mockito.Mockito.verify(paymentFacade).completePayment(eq(500L), eq("tx_abc_123"));
+        // verify that facade's processCallback is called
+        org.mockito.Mockito.verify(paymentFacade).processCallback(eq(500L), eq("tx_abc_123"), eq("DONE"), eq("valid-signature-123"));
     }
 
     @Test
@@ -114,6 +114,9 @@ class PaymentV1ControllerTest {
                 "tx_abc_123"
         );
 
+        org.mockito.Mockito.doThrow(new com.loopers.support.error.CoreException(com.loopers.support.error.ErrorType.UNAUTHORIZED, "Invalid PG Signature"))
+                .when(paymentFacade).processCallback(eq(500L), eq("tx_abc_123"), eq("DONE"), eq("invalid-fake-signature"));
+
         // when & then
         mockMvc.perform(post("/api/v1/payments/callback")
                         .contentType(MediaType.APPLICATION_JSON)
@@ -121,8 +124,5 @@ class PaymentV1ControllerTest {
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.meta.result").value("FAIL"));
-
-        // verify that facade's completePayment is NEVER called
-        org.mockito.Mockito.verify(paymentFacade, org.mockito.Mockito.never()).completePayment(any(), any());
     }
 }

@@ -32,19 +32,7 @@ public class PaymentV1Controller {
             @RequestBody PaymentV1Dto.PaymentCallbackRequest request,
             @org.springframework.web.bind.annotation.RequestHeader(value = "X-PG-Signature", required = false) String signature
     ) {
-        // 위조 콜백 방어 (서명 검증)
-        if (signature == null || !isValidSignature(request, signature)) {
-            throw new com.loopers.support.error.CoreException(com.loopers.support.error.ErrorType.UNAUTHORIZED, "Invalid PG Signature");
-        }
-
-        if ("DONE".equals(request.status())) {
-            paymentFacade.completePayment(request.paymentId(), request.transactionId());
-        }
+        paymentFacade.processCallback(request.paymentId(), request.transactionId(), request.status(), signature);
         return ApiResponse.success();
-    }
-
-    private boolean isValidSignature(PaymentV1Dto.PaymentCallbackRequest request, String signature) {
-        // 실제 운영에서는 PG사의 Secret Key를 이용한 Hash 검증 로직이 들어갑니다.
-        return "valid-signature-123".equals(signature);
     }
 }

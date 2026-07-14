@@ -275,4 +275,19 @@ public class PaymentFacade {
             paymentTempStorage.unlockOrder(orderId);
         }
     }
+
+    public void processCallback(Long paymentId, String transactionId, String status, String signature) {
+        if (signature == null || !isValidSignature(signature)) {
+            throw new CoreException(ErrorType.UNAUTHORIZED, "Invalid PG Signature");
+        }
+        
+        if ("DONE".equals(status)) {
+            completePayment(paymentId, transactionId);
+        }
+    }
+
+    private boolean isValidSignature(String signature) {
+        // 실제 운영에서는 PG사의 Secret Key를 이용한 Hash 검증 로직이 들어갑니다.
+        return "valid-signature-123".equals(signature);
+    }
 }
