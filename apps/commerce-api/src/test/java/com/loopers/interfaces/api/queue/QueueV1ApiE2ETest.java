@@ -54,7 +54,8 @@ class QueueV1ApiE2ETest {
                 () -> assertThat(response.getBody().data().status()).isEqualTo(com.loopers.domain.queue.QueueStatus.WAITING),
                 () -> assertThat(response.getBody().data().userId()).isEqualTo(100L),
                 () -> assertThat(response.getBody().data().rank()).isEqualTo(1L),
-                () -> assertThat(response.getBody().data().estimatedWaitTime()).isEqualTo(0L)
+                () -> assertThat(response.getBody().data().estimatedWaitTime()).isEqualTo(0L),
+                () -> assertThat(response.getBody().data().pollingInterval()).isEqualTo(1L)
         );
     }
 
@@ -202,6 +203,40 @@ class QueueV1ApiE2ETest {
                 () -> assertThat(response.getBody().data().status()).isEqualTo(com.loopers.domain.queue.QueueStatus.WAITING),
                 () -> assertThat(response.getBody().data().rank()).isEqualTo(43L),
                 () -> assertThat(response.getBody().data().estimatedWaitTime()).isEqualTo(2L)
+        );
+    }
+
+    @DisplayName("순번 조회 시 대기 순번에 따른 동적 pollingInterval 반환 경계값을 검증한다.")
+    @Test
+    void getQueuePosition_pollingIntervalBoundary() {
+        // given: 1001명의 유저를 대기열에 미리 삽입 (rank 1 ~ 1001)
+        for (long i = 1; i <= 1001; i++) {
+            defaultRedisTemplate.opsForZSet().add("queue:waiting", String.valueOf(i), (double) i);
+        }
+
+        // when & then: 각 순번에 해당하는 유저의 조회 결과 검증
+        verifyPollingInterval("100", 100L, 1L);   // rank 100 -> 1L
+        verifyPollingInterval("101", 101L, 3L);   // rank 101 -> 3L
+        verifyPollingInterval("1000", 1000L, 3L); // rank 1000 -> 3L
+        verifyPollingInterval("1001", 1001L, 5L); // rank 1001 -> 5L
+    }
+
+    private void verifyPollingInterval(String userId, Long expectedRank, Long expectedPollingInterval) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.set("X-Loopers-UserId", userId);
+
+        ResponseEntity<ApiResponse<QueueV1Dto.QueuePositionResponse>> response = testRestTemplate.exchange(
+                "/queue/position",
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                new ParameterizedTypeReference<ApiResponse<QueueV1Dto.QueuePositionResponse>>() {}
+        );
+
+        assertAll(
+                () -> assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK),
+                () -> assertThat(response.getBody()).isNotNull(),
+                () -> assertThat(response.getBody().data().rank()).isEqualTo(expectedRank),
+                () -> assertThat(response.getBody().data().pollingInterval()).isEqualTo(expectedPollingInterval)
         );
     }
 }
