@@ -38,11 +38,12 @@
 2. **[구현] 스케줄러 (Green)**
    - `QueueScheduler` 구현 (`@Scheduled(fixedDelay = 1000)`).
    - 1초마다 대기열에서 21명 추출하여 토큰(Active) 발급.
-3. **[테스트] 토큰 만료(TTL) 확인 (Red)**
+3. **[테스트] 토큰 만료(TTL) 및 생명주기 검증 (Red)**
    - TTL 초과 시 Redis에서 토큰이 자동 무효화(삭제)되는지 테스트.
-4. **[구현] 주문 API 인터셉터 및 검증 (Green)**
-   - `TokenInterceptor`를 구현하여 `/api/v1/orders` 접근 시 Active 토큰 검증 수행.
-   - 주문/결제 완료 후 토큰을 삭제하는 로직 구현.
+   - 결제 실패 시 토큰을 유지하고, 최종 결제 성공 시에만 토큰을 삭제하는 통합 테스트 추가.
+4. **[구현] 주문/결제 API 인터셉터 및 검증 (Green)**
+   - `TokenInterceptor`를 구현하여 주문(`POST /api/v1/orders`)과 결제(`POST /api/v1/payments`) API 접근 시 Active 토큰 검증을 수행하도록 등록.
+   - 결제 성공 시에만 토큰을 삭제하는 로직 구현 (결제 실패 시 유지).
 5. **[리팩토링]**
    - 인터셉터 등록 및 스케줄러 스레드 풀 격리.
 

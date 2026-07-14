@@ -540,4 +540,65 @@ class PaymentFacadeTest {
         // then
         assertThat(queueRepository.getActiveToken(userId)).isEmpty();
     }
+
+    @Test
+    @DisplayName("결제가 예외로 인해 지연되거나 실패하더라도 유저의 Active 대기열 토큰은 유지된다.")
+    void processPayment_Failure_ShouldKeepActiveQueueToken() {
+        // given
+        Long userId = 199L;
+        String token = "active-token-uuid-fail";
+        queueRepository.makeActive(userId, token, 300);
+        assertThat(queueRepository.getActiveToken(userId)).isPresent();
+
+        com.loopers.domain.brand.BrandModel brand = brandRepository.save(new com.loopers.domain.brand.BrandModel("Nike"));
+        com.loopers.domain.product.ProductModel product = new com.loopers.domain.product.ProductModel(brand.getId(), "Air Max Fail", new BigDecimal("100000"));
+        product.assignStock(10);
+        productRepository.save(product);
+
+        com.loopers.domain.order.OrderModel order = new com.loopers.domain.order.OrderModel(userId, null, new BigDecimal("100000"), BigDecimal.ZERO, new BigDecimal("100000"));
+        com.loopers.domain.order.ProductSnapshot snapshot = new com.loopers.domain.order.ProductSnapshot(product.getName(), product.getPrice(), "Nike");
+        com.loopers.domain.order.OrderItemModel orderItem = new com.loopers.domain.order.OrderItemModel(order, product.getId(), snapshot, 1);
+        order.addItem(orderItem);
+        orderRepository.save(order);
+
+        Mockito.doThrow(new CoreException(ErrorType.INTERNAL_ERROR, "PG Failed"))
+                .when(paymentGateway).requestPayment(Mockito.eq(order.getId()), Mockito.any(), Mockito.any());
+
+        // when
+        paymentFacade.processPayment(order.getId(), PaymentMethod.CARD, new BigDecimal("100000"));
+
+        // then
+        assertThat(queueRepository.getActiveToken(userId)).isPresent();
+        assertThat(queueRepository.getActiveToken(userId).get()).isEqualTo(token);
+    }
+
+    @Test
+    @DisplayName("스케줄러에 의한 결제 보상 처리로 인해 최종 FAILED 상태가 되더라도 유저의 Active 토큰은 유지된다.")
+    void retryOrCompensatePayment_Failed_ShouldKeepActiveQueueToken() {
+        // given
+        Long userId = 200L;
+        String token = "active-token-uuid-fail2";
+        queueRepository.makeActive(userId, token, 300);
+
+        var order = new com.loopers.domain.order.OrderModel(userId, null, new BigDecimal("5000"), BigDecimal.ZERO, new BigDecimal("5000"));
+        var savedOrder = orderRepository.save(order);
+
+        var payment = new PaymentModel(savedOrder.getId(), PaymentMethod.CARD, new BigDecimal("5000"));
+        var savedPayment = paymentRepository.save(payment);
+
+        String redisKey = "payment_retry:" + savedPayment.getId();
+        defaultRedisTemplate.opsForValue().set(redisKey, "2");
+
+        Mockito.doReturn(new PaymentGateway.PaymentGatewayQueryResult(PaymentGatewayStatus.PENDING, null, null))
+                .when(paymentGateway).queryPaymentStatus(savedOrder.getId());
+
+        // when
+        paymentFacade.retryOrCompensatePayment(savedPayment.getId());
+
+        // then
+        var updatedPayment = paymentRepository.findById(savedPayment.getId()).orElseThrow();
+        assertThat(updatedPayment.getStatus()).isEqualTo(PaymentStatus.FAILED);
+        assertThat(queueRepository.getActiveToken(userId)).isPresent();
+        assertThat(queueRepository.getActiveToken(userId).get()).isEqualTo(token);
+    }
 }
