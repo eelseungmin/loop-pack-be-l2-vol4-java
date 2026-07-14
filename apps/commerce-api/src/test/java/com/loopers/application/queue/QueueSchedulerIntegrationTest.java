@@ -72,4 +72,20 @@ class QueueSchedulerIntegrationTest {
         assertThat(expire).isNotNull();
         assertThat(expire).isBetween(290L, 300L);
     }
+
+    @Test
+    @DisplayName("각 사용자의 Active 토큰은 독립적인 만료 시간(TTL)을 가진다.")
+    void makeActive_shouldHaveIndependentTtlForUsers() {
+        // given
+        queueRepository.makeActive(101L, "token-101", 100);
+        queueRepository.makeActive(102L, "token-102", 300);
+
+        // then
+        Long expire1 = defaultRedisTemplate.getExpire("queue:active:101", TimeUnit.SECONDS);
+        Long expire2 = defaultRedisTemplate.getExpire("queue:active:102", TimeUnit.SECONDS);
+
+        assertThat(expire1).isNotNull().isBetween(90L, 100L);
+        assertThat(expire2).isNotNull().isBetween(290L, 300L);
+        assertThat(expire1).isNotEqualTo(expire2);
+    }
 }
