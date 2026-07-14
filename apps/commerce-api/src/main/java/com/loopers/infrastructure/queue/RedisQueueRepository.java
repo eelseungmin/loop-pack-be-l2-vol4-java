@@ -82,4 +82,45 @@ public class RedisQueueRepository implements QueueRepository {
         Object[] values = userIds.stream().map(String::valueOf).toArray();
         defaultRedisTemplate.opsForZSet().remove(WAITING_KEY, values);
     }
+
+    private static final String ENTER_SCRIPT =
+            "local active_token = redis.call('GET', KEYS[1]) \n" +
+            "if active_token then \n" +
+            "    return {1, active_token, -1, -1} \n" +
+            "end \n" +
+            "local current_rank = redis.call('ZRANK', KEYS[2], ARGV[1]) \n" +
+            "if not current_rank then \n" +
+            "    redis.call('ZADD', KEYS[2], ARGV[2], ARGV[1]) \n" +
+            "    current_rank = redis.call('ZRANK', KEYS[2], ARGV[1]) \n" +
+            "end \n" +
+            "local total = redis.call('ZCARD', KEYS[2]) \n" +
+            "return {0, '', current_rank, total}";
+
+    @Override
+    public QueueEntryResult enterAtomically(Long userId, long score) {
+        String activeKey = ACTIVE_KEY_PREFIX + userId;
+        org.springframework.data.redis.core.script.DefaultRedisScript<List> script = 
+            new org.springframework.data.redis.core.script.DefaultRedisScript<>(ENTER_SCRIPT, List.class);
+        
+        List<Object> result = defaultRedisTemplate.execute(
+            script, 
+            List.of(activeKey, WAITING_KEY), 
+            String.valueOf(userId), 
+            String.valueOf(score)
+        );
+
+        if (result == null || result.isEmpty()) {
+            throw new IllegalStateException("Redis script returned null");
+        }
+
+        long status = (Long) result.get(0);
+        if (status == 1L) {
+            String token = (String) result.get(1);
+            return new QueueEntryResult(true, token, null, null);
+        } else {
+            Long rank = (Long) result.get(2);
+            Long total = (Long) result.get(3);
+            return new QueueEntryResult(false, null, rank, total);
+        }
+    }
 }

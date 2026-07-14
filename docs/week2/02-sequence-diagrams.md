@@ -558,18 +558,13 @@ sequenceDiagram
     User->>Controller: POST /api/v1/queue/enter
     Controller->>Facade: 대기열 진입 요청 (userId)
     
-    Facade->>Redis: SISMEMBER active_set {userId}
+    Facade->>Redis: Lua Script 실행 (EVAL)
+    Note right of Redis: SISMEMBER, ZADD, ZRANK, ZCARD를<br/>원자적(Atomic)으로 일괄 처리
+    Redis-->>Facade: 결과 반환 (is_active, rank, total)
     alt 이미 Active 상태
-        Redis-->>Facade: true
         Facade-->>Controller: 이미 통과됨 (ACTIVE)
         Controller-->>User: 200 OK (상태: ACTIVE)
     else 대기 상태
-        Facade->>Redis: ZADD waiting_queue NX {timestamp} {userId}
-        Note right of Redis: NX 옵션으로 중복 진입 방지
-        Facade->>Redis: ZRANK waiting_queue {userId}
-        Redis-->>Facade: 순번 반환
-        Facade->>Redis: ZCARD waiting_queue
-        Redis-->>Facade: 전체 대기 인원 반환
         Note right of Facade: 예상 대기시간 = 순번 / 고정처리량 계산
         Facade-->>Controller: 순번, 대기시간, 전체인원
         Controller-->>User: 200 OK (상태: WAITING, 순번 등)

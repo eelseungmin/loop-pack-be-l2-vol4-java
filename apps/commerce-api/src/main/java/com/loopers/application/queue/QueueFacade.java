@@ -15,25 +15,19 @@ public class QueueFacade {
     private final QueueService queueService;
 
     public QueuePosition enterQueue(Long userId) {
-        // 1. Check if user is already Active
-        Optional<String> activeToken = queueRepository.getActiveToken(userId);
-        if (activeToken.isPresent()) {
-            return queueService.getQueuePosition(userId, Optional.empty(), activeToken);
+        QueueRepository.QueueEntryResult result = queueRepository.enterAtomically(userId, System.currentTimeMillis());
+
+        if (result.isActive()) {
+            return queueService.getQueuePosition(userId, Optional.empty(), Optional.of(result.activeToken()));
         }
 
-        // 2. Check if user is already Waiting (preserves position, prevents duplicates)
-        Optional<Long> rank = queueRepository.getRank(userId);
-        if (rank.isPresent()) {
-            return queueService.getQueuePosition(userId, rank, Optional.empty());
-        }
-
-        // 3. New Entry
-        queueRepository.enter(userId, System.currentTimeMillis());
-        Optional<Long> newRank = queueRepository.getRank(userId);
-        return queueService.getQueuePosition(userId, newRank, Optional.empty());
+        return queueService.getQueuePosition(userId, Optional.of(result.rank()), Optional.empty());
     }
 
     public QueuePosition getQueuePosition(Long userId) {
+        // We can use the same atomic script for getQueuePosition, but without ZADD.
+        // Wait, getQueuePosition can just use the atomic enter with score 0? No, that would add if not exists.
+        // Let's leave getQueuePosition as is, since the sequence diagram for getQueuePosition doesn't use ZADD.
         Optional<String> activeToken = queueRepository.getActiveToken(userId);
         Optional<Long> rank = queueRepository.getRank(userId);
         return queueService.getQueuePosition(userId, rank, activeToken);

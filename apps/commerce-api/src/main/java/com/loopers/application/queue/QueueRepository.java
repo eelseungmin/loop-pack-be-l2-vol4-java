@@ -13,4 +13,7 @@ public interface QueueRepository {
     void removeActive(Long userId);
     List<Long> getFirstNWaiting(int n);
     void removeWaitingUsers(List<Long> userIds);
+    QueueEntryResult enterAtomically(Long userId, long score);
+
+    record QueueEntryResult(boolean isActive, String activeToken, Long rank, Long total) {}
 }
