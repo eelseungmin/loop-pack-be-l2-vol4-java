@@ -13,6 +13,8 @@
 - 상품 상세 조회 응답에 오늘 기준 랭킹 정보를 포함한다.
 
 ### 범위
+- `modules:event-contract`: `OUTBOX_EVENTS` 재빌드 조회에 사용할 읽기 전용 이벤트 로그 계약
+- `modules:ranking-contract`: 랭킹 표준 이벤트, 이벤트 타입, 점수 정책, Redis Key/date 정책
 - `apps:commerce-streamer`: `RankingKafkaConsumer`, 점수 계산 정책, Redis 랭킹 저장소, 멱등성 처리, 재빌드 Job
 - `apps:commerce-api`: Ranking API, 상품 상세 응답 확장, 상품 정보 aggregation
 - `docs/week9`: 구현 계획 및 검증 기준
@@ -35,31 +37,41 @@
 - `MetricsKafkaConsumer`는 `product_metrics`만 갱신하고, `RankingKafkaConsumer`는 Redis 랭킹만 갱신한다.
 - `product_metrics`와 Redis 랭킹은 독립 Projection이며, Consumer lag/장애 동안 일시적으로 다를 수 있다.
 - `RankingKafkaConsumer`는 Redis 반영 성공 후에만 Kafka offset을 커밋한다.
+- `modules/ranking-contract`는 `ProductRankingEvent`, `RankingEventType`, `RankingScorePolicy`, `RankingKeyPolicy`를 제공한다.
+- `commerce-api`와 `commerce-streamer`는 `modules/ranking-contract`를 의존해 같은 ranking key/date/score 정책을 사용한다.
+- `modules/event-contract`는 읽기 전용 `OutboxEventLog(id, eventType, status, payload, createdAt)` 계약을 제공한다. JPA Entity는 공용화하지 않는다.
+- Outbox의 랭킹 표준 이벤트는 `PRODUCT_RANKING_EVENT` 단일 `event_type`으로 저장하고, 실제 행위는 payload의 `rankingEventType`으로 구분한다.
+- DB raw payload에는 `eventId`를 저장하지 않는다. Kafka Relay와 재빌드 조회 구현이 `OUTBOX_EVENTS.id`를 `ProductRankingEvent.eventId`로 주입한다.
 - 상품 상세 조회의 랭킹은 항상 서버의 오늘 날짜 기준이며, 랭킹에 없으면 `null`이다.
-- 상품 논리 삭제 시 `PRODUCT_DELETED` Outbox 이벤트를 발행하고, `RankingKafkaConsumer`가 최근 TTL 범위의 Redis ZSET에서 해당 상품을 제거한다.
+- 상품 논리 삭제 시 `rankingEventType=PRODUCT_DELETED`인 `PRODUCT_RANKING_EVENT` Outbox 이벤트를 발행하고, `RankingKafkaConsumer`가 최근 TTL 범위의 Redis ZSET에서 해당 상품을 제거한다.
 - 랭킹 API 조회 시점에 남아 있는 삭제 상품은 2차 방어로 제외한다.
-- Redis 데이터 유실 시 오늘/전일 랭킹을 `ranking:rebuild:*` 임시 Key에 재계산한 뒤 운영 Key로 교체하는 재빌드 로직과 포트를 둔다.
-- 단, 실제 `OUTBOX_EVENTS` 조회 구현은 이번 범위에서 보류한다.
+- Redis 데이터 유실 시 `commerce-streamer`가 `OUTBOX_EVENTS`에서 `PRODUCT_RANKING_EVENT`를 조회해 오늘/전일 랭킹을 `ranking:rebuild:*` 임시 Key에 재계산한 뒤 운영 Key로 교체한다.
+- 재빌드 조회 대상 상태는 `INIT`, `COMPLETED`이며 `FAILED`는 제외한다.
+- 재빌드 후보는 `createdAt` 기준 최근 3일 버퍼로 조회하고, 실제 반영 날짜는 payload의 `occurredAt` 기준으로 계산한다.
+- 운영 Key 교체 중 `RankingKafkaConsumer`와의 충돌 방지는 후속 운영 절차로 남긴다. Consumer 일시 중단 또는 기준 시각 이후 이벤트 replay 중 하나를 선택해야 한다.
 
 ## 3. 단계별 구현 계획
 
-### Step 1. Ranking 점수 정책 작성
+### Step 1. Ranking Contract 모듈 작성
 
-**목표:** 이벤트 타입별 점수와 이벤트 발생 시각 기준 dateKey 계산을 순수 로직으로 분리한다.
+**목표:** 이벤트 타입, 표준 이벤트 계약, 점수 정책, Redis Key/date 정책을 `modules:ranking-contract`의 순수 로직으로 분리한다.
 
 1. **Red**
+   - `ProductRankingEvent`, `RankingEventType`, `RankingKeyPolicy` 테스트를 작성한다.
    - `RankingScorePolicyTest` 작성.
    - 조회 이벤트는 `0.1`, 좋아요 이벤트는 `0.2`를 반환하는지 검증한다.
    - 주문 이벤트는 `0.6 * log(price * amount + 1)`을 반환하는지 검증한다.
    - 이벤트 발생 시각이 `2026-07-14T23:59:59`이면 dateKey가 `20260714`인지 검증한다.
+   - `ranking:all:{yyyyMMdd}`, `ranking:handled:{yyyyMMdd}`, `ranking:rebuild:all:{yyyyMMdd}` Key가 같은 정책에서 계산되는지 검증한다.
 2. **Green**
-   - `RankingScorePolicy`를 최소 구현한다.
+   - `modules:ranking-contract`를 추가한다.
+   - `ProductRankingEvent`, `RankingEventType`, `RankingScorePolicy`, `RankingKeyPolicy`를 최소 구현한다.
    - 이벤트 타입별 Weight는 상수로 둔다.
 3. **Refactor**
    - 이벤트 타입 문자열, Weight, date formatter를 명확한 이름으로 정리한다.
    - 정책 클래스는 Redis, Kafka, DB에 의존하지 않게 유지한다.
 
-**검증:** `./gradlew :apps:commerce-streamer:test`
+**검증:** `./gradlew :modules:ranking-contract:test`
 
 ### Step 2. Redis 랭킹 저장소 구현
 
@@ -72,6 +84,7 @@
    - ZSET과 handled Set에 모두 2일 TTL이 설정되는지 검증한다.
 2. **Green**
    - `RankingRedisRepository` 인터페이스와 Redis 구현체를 추가한다.
+   - Redis Key 문자열은 `RankingKeyPolicy`를 통해 계산한다.
    - `SADD`, `ZINCRBY`, `EXPIRE`를 사용해 최소 구현한다.
 3. **Refactor**
    - 중복 가산 방지를 위해 `SADD + ZINCRBY + EXPIRE`를 Lua Script로 원자화할지 검토한다.
@@ -92,6 +105,7 @@
    - Redis 랭킹 반영 실패 시 수동 Ack가 수행되지 않는지 검증한다.
 2. **Green**
    - `RankingKafkaConsumer`를 추가하고 `MetricsKafkaConsumer`와 다른 Consumer Group을 사용하도록 설정한다.
+   - Kafka payload는 `modules:ranking-contract`의 `ProductRankingEvent`로 역직렬화한다.
    - 조회/좋아요/주문 이벤트는 `ranking:handled:{yyyyMMdd}` 확인 후 `ZINCRBY`를 수행한다.
    - 상품 삭제 이벤트는 별도 handled Set 없이 최근 TTL 범위의 `ranking:all:*`에서 `ZREM`을 수행한다.
    - Redis 반영이 성공한 뒤에만 Ack한다.
@@ -125,15 +139,19 @@
 **목표:** 상품 논리 삭제 시 Outbox 이벤트를 남기고, `RankingKafkaConsumer`가 해당 이벤트를 소비해 최근 TTL 범위의 랭킹 ZSET에서 상품을 제거한다.
 
 1. **Red**
-   - `ProductAdminFacadeTest`에 상품 삭제 시 `PRODUCT_DELETED` Outbox 이벤트가 저장되는지 테스트를 추가한다.
+   - `ProductAdminFacadeTest`에 상품 삭제 시 `rankingEventType=PRODUCT_DELETED`인 `PRODUCT_RANKING_EVENT` Outbox 이벤트가 저장되는지 테스트를 추가한다.
    - `RankingKafkaConsumerTest`에 상품 삭제 이벤트 수신 시 `ranking:all:{today}`, `ranking:all:{yesterday}`에서 해당 `productId`가 제거되는지 테스트를 추가한다.
    - 삭제된 상품이 ZSET에서 제거된 뒤 랭킹 API 다음 페이지와 중복 노출되지 않는지 검증한다.
+   - Outbox Relay가 `PRODUCT_RANKING_EVENT` 발행 시 `OUTBOX_EVENTS.id`를 payload의 `eventId`로 주입하는지 검증한다.
 2. **Green**
-   - `ProductAdminFacade.deleteProduct` 흐름에서 상품 논리 삭제와 함께 `PRODUCT_DELETED` Outbox 이벤트를 저장한다.
+   - `ProductAdminFacade.deleteProduct` 흐름에서 상품 논리 삭제와 함께 `PRODUCT_RANKING_EVENT` Outbox 이벤트를 저장한다.
+   - DB raw payload에는 `eventId`를 넣지 않고, payload 내부 `rankingEventType`을 `PRODUCT_DELETED`로 둔다.
+   - Outbox Relay가 `PRODUCT_RANKING_EVENT` 발행 시 `OUTBOX_EVENTS.id`를 payload의 `eventId`로 주입한다.
    - `RankingRedisRepository.removeProductFromRecentRankings(productId)`를 구현한다.
    - `RankingKafkaConsumer`가 상품 삭제 이벤트를 소비해 최근 2일 랭킹 Key에 대해 `ZREM`을 수행한다.
 3. **Refactor**
    - TTL 기간이 바뀌어도 제거 대상 Key 계산을 한 곳에서 관리하도록 정리한다.
+   - `PRODUCT_RANKING_EVENT` 외의 기존 Outbox 이벤트는 payload를 변형하지 않도록 분기 범위를 좁힌다.
    - Redis 정리 실패 시 `RankingKafkaConsumer`가 Ack하지 않고 재처리한다는 정책을 테스트와 주석으로 명확히 남긴다.
 
 **검증:** `./gradlew :apps:commerce-api:test`
@@ -155,25 +173,35 @@
 
 **검증:** `./gradlew :apps:commerce-api:test`
 
-### Step 7. Redis 랭킹 유실 재빌드 Job
+### Step 7. Outbox/Event 로그 기반 Redis 랭킹 재빌드
 
-**목표:** Redis 랭킹 데이터가 유실된 경우 원천 이벤트 로그를 이용해 오늘/전일 랭킹을 재계산할 수 있도록 재빌드 Job과 이벤트 조회 포트를 마련한다.
+**목표:** Redis 랭킹 데이터가 유실된 경우 `OUTBOX_EVENTS`에 남은 랭킹 표준 이벤트를 읽어 오늘/전일 랭킹을 재계산할 수 있도록 한다.
 
-> 범위 조정: 실제 `OUTBOX_EVENTS` 조회 구현은 보류한다. 이번 단계에서는 `RankingRebuildEventRepository` 포트, 재계산 로직, Redis 임시 Key 교체 로직까지만 구현한다.
+> 범위 조정: 기존 C 결정의 “실제 `OUTBOX_EVENTS` 조회 구현 보류”를 철회한다. 이번 단계에서는 `modules:event-contract`를 추가하고, `commerce-streamer`에서 `OUTBOX_EVENTS` 조회 구현까지 포함한다. 단, 운영 Key 교체 중 실시간 Consumer와의 충돌 방지 절차는 후속 운영 의사결정으로 남긴다.
 
 1. **Red**
+   - `OutboxEventLog` 계약 테스트를 작성한다.
+   - `RankingRebuildEventRepositoryTest`를 작성한다.
+   - `PRODUCT_RANKING_EVENT` 중 `INIT`, `COMPLETED` 상태만 조회하고 `FAILED`는 제외하는지 검증한다.
+   - `createdAt` 기준 최근 3일 버퍼로 후보를 조회하는지 검증한다.
+   - 조회한 `OUTBOX_EVENTS.id`를 `ProductRankingEvent.eventId`로 주입하는지 검증한다.
    - `RankingRebuildJobTest`를 작성한다.
    - 오늘/전일 범위의 조회/좋아요/주문 이벤트를 읽어 `ranking:rebuild:all:{yyyyMMdd}`에 점수가 재계산되는지 검증한다.
    - 상품 삭제 이벤트가 재빌드 결과에서 해당 상품을 제거하는지 검증한다.
    - 재빌드 완료 후 `ranking:rebuild:*` 임시 Key가 운영 Key(`ranking:*`)로 교체되는지 검증한다.
 2. **Green**
+   - `modules:event-contract`를 추가하고 `OutboxEventLog`를 구현한다.
    - `RankingRebuildJob`을 구현한다.
-   - 대상 기간의 랭킹 관련 이벤트는 `RankingRebuildEventRepository` 포트로 조회한다.
+   - `RankingRebuildEventRepository` 구현체가 `OUTBOX_EVENTS`에서 `PRODUCT_RANKING_EVENT`를 조회한다.
+   - 조회 조건은 `status in (INIT, COMPLETED)`, `createdAt >= 기준일 - 3일`로 둔다.
+   - raw payload에는 `eventId`가 없으므로 `OUTBOX_EVENTS.id`를 `ProductRankingEvent.eventId`로 주입한다.
+   - payload의 `occurredAt`이 오늘/전일인 이벤트만 재빌드에 반영한다.
    - `RankingScorePolicy`를 재사용해 점수를 계산하고 Redis 임시 Key에 적재한다.
    - 재빌드 완료 후 임시 Key를 운영 Key로 교체한다.
 3. **Refactor**
    - 재빌드 대상 기간 계산(today/yesterday)을 설정 값 또는 정책 클래스로 분리한다.
-   - 실제 `OUTBOX_EVENTS` 조회 구현과 운영 Key 교체 중 Consumer 충돌 방지 절차는 후속 의사결정으로 남긴다.
+   - `OUTBOX_EVENTS` 조회용 JPA Entity는 `commerce-streamer` 인프라에 두고, `modules:event-contract`에는 읽기 전용 계약만 남긴다.
+   - 운영 Key 교체 중 Consumer 충돌 방지 절차는 후속 의사결정으로 남긴다.
 
 **검증:** `./gradlew :apps:commerce-streamer:test`
 
@@ -187,7 +215,7 @@
    - 같은 `eventId`를 두 번 처리해도 ZSET 점수가 한 번만 반영되는지 검증한다.
    - 이벤트 발생일이 전일인 이벤트가 전일 Key에 반영되고 TTL 내 조회 가능한지 검증한다.
    - `MetricsKafkaConsumer`와 `RankingKafkaConsumer`가 독립 Consumer Group으로 같은 이벤트를 각각 처리하는지 검증한다.
-   - Redis 랭킹 Key 삭제 후 재빌드 Job의 포트 기반 재계산 로직으로 오늘/전일 랭킹이 복구되는지 검증한다.
+   - Redis 랭킹 Key 삭제 후 `OUTBOX_EVENTS`의 `PRODUCT_RANKING_EVENT` 기반 재빌드로 오늘/전일 랭킹이 복구되는지 검증한다.
 2. **Green**
    - 필요한 테스트 설정과 fixture만 최소 추가한다.
    - API와 Consumer를 실제 빈으로 묶어 흐름을 검증한다.
@@ -216,34 +244,42 @@
 
 ## 5. 완료 기준
 
-- [ ] `RankingScorePolicy`가 이벤트 타입별 점수와 발생일 기준 dateKey를 계산한다.
-- [ ] `ranking:all:{yyyyMMdd}`와 `ranking:handled:{yyyyMMdd}`가 모두 2일 TTL로 생성된다.
-- [ ] 같은 `eventId`가 재처리되어도 Redis ZSET 점수가 중복 가산되지 않는다.
-- [ ] `MetricsKafkaConsumer`와 `RankingKafkaConsumer`가 서로 다른 Consumer Group으로 같은 이벤트를 독립 소비한다.
-- [ ] `MetricsKafkaConsumer`는 `product_metrics`만 갱신하고, `RankingKafkaConsumer`는 Redis 랭킹만 갱신한다.
-- [ ] `RankingKafkaConsumer`는 Redis 반영 성공 후 Kafka offset을 커밋한다.
-- [ ] `GET /api/v1/rankings`가 상품 정보를 포함한 랭킹 페이지를 반환한다.
-- [ ] 상품 논리 삭제 시 `PRODUCT_DELETED` Outbox 이벤트가 발행되고, `RankingKafkaConsumer`가 최근 TTL 범위의 랭킹 ZSET에서 해당 상품을 제거한다.
-- [ ] 삭제 이벤트 처리 지연 등으로 ZSET에 남아 있는 삭제 상품은 API 응답에서 제외된다.
-- [ ] 상품 상세 조회가 오늘 기준 랭킹 정보를 포함하고, 랭킹이 없으면 `null`을 반환한다.
-- [ ] Redis 데이터 유실 시 포트 기반 재빌드 로직으로 오늘/전일 랭킹을 복구할 수 있다.
-- [ ] 실제 `OUTBOX_EVENTS` 조회 구현은 보류 상태로 명시되어 있다.
+- [x] `RankingScorePolicy`가 이벤트 타입별 점수와 발생일 기준 dateKey를 계산한다.
+- [x] `ranking:all:{yyyyMMdd}`와 `ranking:handled:{yyyyMMdd}`가 모두 2일 TTL로 생성된다.
+- [x] 같은 `eventId`가 재처리되어도 Redis ZSET 점수가 중복 가산되지 않는다.
+- [x] `MetricsKafkaConsumer`와 `RankingKafkaConsumer`가 서로 다른 Consumer Group으로 같은 이벤트를 독립 소비한다.
+- [x] `MetricsKafkaConsumer`는 `product_metrics`만 갱신하고, `RankingKafkaConsumer`는 Redis 랭킹만 갱신한다.
+- [x] `RankingKafkaConsumer`는 Redis 반영 성공 후 Kafka offset을 커밋한다.
+- [ ] `modules:ranking-contract`가 랭킹 표준 이벤트, 점수 정책, Key/date 정책을 제공한다.
+- [ ] `commerce-api`와 `commerce-streamer`가 같은 `RankingKeyPolicy`를 사용한다.
+- [ ] `modules:event-contract`가 읽기 전용 `OutboxEventLog` 계약을 제공한다.
+- [ ] `PRODUCT_RANKING_EVENT` raw payload에는 `eventId`를 저장하지 않고, Relay/재빌드 조회 시 `OUTBOX_EVENTS.id`를 주입한다.
+- [x] `GET /api/v1/rankings`가 상품 정보를 포함한 랭킹 페이지를 반환한다.
+- [ ] 상품 논리 삭제 시 `rankingEventType=PRODUCT_DELETED`인 `PRODUCT_RANKING_EVENT`가 발행되고, `RankingKafkaConsumer`가 최근 TTL 범위의 랭킹 ZSET에서 해당 상품을 제거한다.
+- [x] 삭제 이벤트 처리 지연 등으로 ZSET에 남아 있는 삭제 상품은 API 응답에서 제외된다.
+- [x] 상품 상세 조회가 오늘 기준 랭킹 정보를 포함하고, 랭킹이 없으면 `null`을 반환한다.
+- [ ] Redis 데이터 유실 시 `OUTBOX_EVENTS`의 `PRODUCT_RANKING_EVENT`를 조회해 오늘/전일 랭킹을 복구할 수 있다.
+- [ ] 재빌드 조회는 `INIT`, `COMPLETED` 상태를 포함하고 `FAILED` 상태를 제외한다.
+- [ ] 재빌드 후보는 `createdAt` 기준 버퍼 기간으로 조회하고, 실제 반영 날짜는 payload의 `occurredAt` 기준으로 계산한다.
+- [ ] 운영 Key 교체 중 실시간 Consumer 충돌 방지는 후속 운영 절차로 명시되어 있다.
 - [ ] 이벤트 발행 -> Consumer 처리 -> Redis ZSET 반영 -> API 조회 E2E 테스트가 통과한다.
 
 ## 6. 커밋 단위 제안
 
 1. `test: 랭킹 점수 정책 테스트 추가`
-2. `feat: 랭킹 점수 정책 구현`
+2. `feat: 랭킹 계약 모듈 구현`
 3. `test: Redis 랭킹 저장소 멱등성 테스트 추가`
 4. `feat: Redis 랭킹 저장소 구현`
 5. `test: 랭킹 Consumer 이벤트 처리 테스트 추가`
 6. `feat: Ranking Consumer 랭킹 적재 구현`
 7. `test: 랭킹 조회 API 테스트 추가`
 8. `feat: 인기상품 랭킹 API 구현`
-9. `test: 상품 삭제 시 랭킹 ZSET 제거 테스트 추가`
-10. `feat: 상품 삭제 이벤트 기반 랭킹 ZSET 제거`
+9. `test: 상품 삭제 시 랭킹 표준 이벤트 테스트 추가`
+10. `feat: 상품 삭제 랭킹 이벤트 발행 구현`
 11. `test: 상품 상세 랭킹 응답 테스트 추가`
 12. `feat: 상품 상세 조회에 오늘 랭킹 포함`
-13. `test: Redis 랭킹 재빌드 테스트 추가`
-14. `feat: Redis 랭킹 재빌드 Job 구현`
-15. `test: 랭킹 E2E 흐름 검증 추가`
+13. `test: 이벤트 로그 계약 테스트 추가`
+14. `feat: 이벤트 로그 계약 모듈 구현`
+15. `test: Outbox 기반 랭킹 재빌드 테스트 추가`
+16. `feat: Outbox 기반 랭킹 재빌드 구현`
+17. `test: 랭킹 E2E 흐름 검증 추가`

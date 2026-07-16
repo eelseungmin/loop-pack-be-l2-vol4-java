@@ -135,12 +135,16 @@
     *   주문 점수는 주문 금액의 영향은 반영하되, 고가 상품 1건이 랭킹을 과도하게 지배하지 않도록 로그 정규화를 적용한다.
 *   **Consumer 처리 책임:** `MetricsKafkaConsumer`와 `RankingKafkaConsumer`를 분리한다. 두 Consumer는 같은 상품 이벤트 토픽을 서로 다른 Consumer Group으로 독립 소비한다. `MetricsKafkaConsumer`는 `product_metrics` 누적 집계만 담당하고, `RankingKafkaConsumer`는 Redis 랭킹 Read Model 갱신만 담당한다.
 *   **독립 Projection 및 최종 일관성:** `PRODUCT_METRICS`와 Redis 랭킹은 서로 다른 목적의 Projection이다. 한쪽 Consumer의 지연이나 장애가 다른 쪽 처리를 막지 않으며, 두 Projection은 Consumer 재시도를 통해 최종적으로 수렴한다.
+*   **공통 계약 모듈 분리:** 랭킹 관련 비즈니스 계약과 이벤트 로그 조회 계약은 기술 모듈에 두지 않는다.
+    *   `modules/ranking-contract`: `ProductRankingEvent`, `RankingEventType`, `RankingScorePolicy`, `RankingKeyPolicy`를 제공한다. `commerce-api`와 `commerce-streamer`는 같은 랭킹 Key/date/score 정책을 사용한다.
+    *   `modules/event-contract`: `OutboxEventLog` 읽기 전용 계약을 제공한다. `OutboxEventLog`는 `id`, `eventType`, `status`, `payload`, `createdAt`을 가진다. JPA Entity는 공용화하지 않고 각 애플리케이션의 인프라 구현에 둔다.
 *   **Ranking Consumer Ack 정책:** `RankingKafkaConsumer`는 Redis 반영에 성공한 뒤에만 Kafka offset을 커밋한다. Redis 장애 중에는 Ranking Consumer lag이 쌓일 수 있으나, Redis 복구 후 미처리 이벤트를 재소비해 랭킹을 따라잡는다.
 *   **Redis 멱등성:** Kafka 재처리로 인한 `ZINCRBY` 중복 가산을 막기 위해, 조회/좋아요/주문 이벤트는 `ranking:handled:{yyyyMMdd}` Set에 `eventId`를 먼저 저장한다. 최초 저장에 성공한 이벤트에 대해서만 `ranking:all:{yyyyMMdd}`에 점수를 누적한다. 상품 삭제 이벤트는 `ZREM` 자체가 멱등적이므로 별도 Redis handled Set을 사용하지 않는다.
+*   **랭킹 표준 이벤트:** Outbox에는 랭킹 표준 이벤트를 `PRODUCT_RANKING_EVENT` 단일 `event_type`으로 기록한다. 실제 행위는 payload 내부 `rankingEventType`(`VIEW`, `LIKE`, `ORDER`, `PRODUCT_DELETED`)으로 구분한다. DB에 저장되는 raw payload에는 `eventId`를 넣지 않고, Kafka Relay 또는 재빌드 조회 구현이 `OUTBOX_EVENTS.id`를 `ProductRankingEvent.eventId`로 주입한다.
 *   **Kafka 배치 리스너 (선택적 최적화):** 기본 설계는 단건 이벤트 처리로 검증한다. 트래픽 증가로 ZSET/DB 연산이 과도해질 경우 배치 리스너를 적용해 `(date, productId)` 단위로 점수를 합산한 뒤 Redis Pipeline 및 DB Batch Update로 처리량을 높인다.
 *   **Ranking API 조회:** `GET /api/v1/rankings?date=yyyyMMdd&size=20&page=1` 호출 시 Redis ZSET에서 상품 ID와 점수를 읽고, 상품 Repository로 상품/브랜드 정보를 조회해 랭킹 응답을 조합한다. 페이징 정책은 기존 프로젝트 API 정책을 따른다.
-*   **삭제 상품 처리:** 상품이 논리 삭제되면 상품 삭제 트랜잭션 안에서 `PRODUCT_DELETED` Outbox 이벤트를 기록하고, 기존 Outbox Relay가 Kafka로 발행한다. `RankingKafkaConsumer`는 이 이벤트를 소비해 최근 TTL 범위의 랭킹 ZSET에서 해당 `productId`를 제거한다. 현재 TTL이 2일이므로 삭제 시점 기준 오늘/전일 Key(`ranking:all:{yyyyMMdd}`)에서 `ZREM`을 수행한다. API 조회 시에는 삭제 이벤트 처리 지연 등으로 ZSET에 남아 있는 삭제 상품을 2차 방어로 제외한다.
-*   **Redis 유실 복구:** Redis 데이터가 유실된 경우, 원천 이벤트 로그에서 오늘/전일 이벤트를 다시 읽어 `ranking:rebuild:all:{yyyyMMdd}` 임시 Key에 랭킹을 재계산한 뒤 운영 Key(`ranking:all:{yyyyMMdd}`)로 교체하는 재빌드 구조를 둔다. 단, 실제 `OUTBOX_EVENTS` 조회 구현은 이번 범위에서 보류하고, 재빌드 Job은 이벤트 조회 포트(`RankingRebuildEventRepository`)를 통해 입력을 받도록 한다.
+*   **삭제 상품 처리:** 상품이 논리 삭제되면 상품 삭제 트랜잭션 안에서 `PRODUCT_RANKING_EVENT` Outbox 이벤트를 기록하고, payload의 `rankingEventType`은 `PRODUCT_DELETED`로 둔다. 기존 Outbox Relay가 Kafka 발행 시 `OUTBOX_EVENTS.id`를 `eventId`로 주입하고, `RankingKafkaConsumer`는 이 이벤트를 소비해 최근 TTL 범위의 랭킹 ZSET에서 해당 `productId`를 제거한다. 현재 TTL이 2일이므로 삭제 시점 기준 오늘/전일 Key(`ranking:all:{yyyyMMdd}`)에서 `ZREM`을 수행한다. API 조회 시에는 삭제 이벤트 처리 지연 등으로 ZSET에 남아 있는 삭제 상품을 2차 방어로 제외한다.
+*   **Redis 유실 복구:** Redis 데이터가 유실된 경우, `commerce-streamer`의 `RankingRebuildEventRepository` 구현이 `OUTBOX_EVENTS`에서 `PRODUCT_RANKING_EVENT`를 조회해 `ProductRankingEvent`로 변환한다. 조회 대상 상태는 `INIT`, `COMPLETED`이며 `FAILED`는 제외한다. 후보 조회는 `createdAt` 기준 최근 3일 버퍼를 두고, 실제 랭킹 반영 여부는 payload 내부 `occurredAt`이 오늘/전일인지로 판단한다. 재빌드 Job은 조회한 이벤트를 `ranking:rebuild:all:{yyyyMMdd}` 임시 Key에 재계산한 뒤 운영 Key(`ranking:all:{yyyyMMdd}`)로 교체한다. 운영 Key 교체 중 `RankingKafkaConsumer`와의 충돌 방지는 후속 운영 절차로 남기며, Consumer 일시 중단 또는 기준 시각 이후 이벤트 replay 중 하나를 선택해야 한다.
 *   **상품 상세 랭킹 포함:** `GET /api/v1/products/{productId}` 응답에는 서버의 오늘 날짜 기준 랭킹 정보를 함께 반환한다. 해당 상품이 오늘 랭킹에 없으면 랭킹 정보는 `null`로 반환한다.
 
 ### 2.13 글로벌 대기열 (Queue) 정책
@@ -285,7 +289,9 @@
 *   동일 `eventId`가 재처리되어도 Redis ZSET 점수가 중복 가산되지 않는다.
 *   `MetricsKafkaConsumer`와 `RankingKafkaConsumer`는 서로 다른 Consumer Group으로 독립 소비한다.
 *   `RankingKafkaConsumer`는 Redis 반영 성공 후 Kafka offset을 커밋한다.
-*   Redis 데이터 유실 시 포트 기반 재빌드 로직으로 오늘/전일 랭킹을 재빌드할 수 있다. 실제 `OUTBOX_EVENTS` 조회 구현은 보류한다.
+*   Redis 데이터 유실 시 `OUTBOX_EVENTS`의 `PRODUCT_RANKING_EVENT`를 조회해 오늘/전일 랭킹을 재빌드할 수 있다.
+*   `OUTBOX_EVENTS` 조회 시 `INIT`, `COMPLETED` 상태를 포함하고 `FAILED` 상태는 제외한다.
+*   재빌드 후보는 `createdAt` 기준 버퍼 기간으로 조회하되, 실제 랭킹 날짜는 payload의 `occurredAt` 기준으로 계산한다.
 
 ### 5.2 Ranking API
 *   랭킹 Page 조회 시 정상적으로 랭킹 정보가 반환된다.

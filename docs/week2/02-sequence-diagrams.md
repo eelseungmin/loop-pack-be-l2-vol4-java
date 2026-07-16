@@ -595,13 +595,14 @@ sequenceDiagram
     Admin->>ProductAdminController: DELETE /api-admin/v1/products/{productId}
     ProductAdminController->>ProductAdminFacade: 상품 논리 삭제 요청
     ProductAdminFacade->>ProductRepository: 상품 is_deleted=true 변경
-    ProductAdminFacade->>Outbox: PRODUCT_DELETED 이벤트 저장 (INIT)
+    ProductAdminFacade->>Outbox: PRODUCT_RANKING_EVENT 저장 (rankingEventType=PRODUCT_DELETED, INIT)
     ProductAdminFacade-->>ProductAdminController: 삭제 완료
     ProductAdminController-->>Admin: 200 OK
 
     Relay->>Outbox: INIT 이벤트 조회
-    Relay->>Kafka: PRODUCT_DELETED 이벤트 발행
-    Kafka->>Consumer: 상품 삭제 이벤트 수신
+    Relay->>Relay: OUTBOX_EVENTS.id를 eventId로 payload에 주입
+    Relay->>Kafka: PRODUCT_RANKING_EVENT 발행
+    Kafka->>Consumer: rankingEventType=PRODUCT_DELETED 수신
     Consumer->>RankingStore: ZREM ranking:all:{today} productId
     Consumer->>RankingStore: ZREM ranking:all:{yesterday} productId
     Consumer->>Kafka: Redis 반영 성공 후 수동 Ack
@@ -611,19 +612,25 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    title Redis 랭킹 데이터 유실 시 포트 기반 재빌드
+    title Redis 랭킹 데이터 유실 시 Outbox/Event 로그 기반 재빌드
     participant Operator
     participant RebuildJob as RankingRebuildJob
     participant EventSource as RankingRebuildEventRepository
-    participant ScorePolicy as RankingScorePolicy
+    participant Outbox as OUTBOX_EVENTS
+    participant EventContract as modules/event-contract
+    participant RankingContract as modules/ranking-contract
     participant Redis as Redis Ranking Store
 
     Operator->>RebuildJob: 오늘/전일 랭킹 재빌드 실행
-    RebuildJob->>EventSource: 대상 기간의 상품 이벤트 조회
-    Note over RebuildJob, EventSource: 실제 OUTBOX_EVENTS 조회 구현은 이번 범위에서 보류
+    RebuildJob->>EventSource: 재빌드 후보 이벤트 조회 요청
+    EventSource->>Outbox: event_type=PRODUCT_RANKING_EVENT<br/>status in (INIT, COMPLETED)<br/>createdAt >= 기준일-3일 조회
+    Outbox-->>EventSource: OutboxEventLog 목록
+    EventSource->>EventContract: OutboxEventLog(id, eventType, status, payload, createdAt)
+    EventSource->>RankingContract: OUTBOX_EVENTS.id를 eventId로 주입해 ProductRankingEvent 변환
+    EventSource-->>RebuildJob: ProductRankingEvent 목록
     loop 이벤트별 재계산
-        RebuildJob->>ScorePolicy: occurredAt 기준 dateKey 및 scoreDelta 계산
-        ScorePolicy-->>RebuildJob: yyyyMMdd, productId, weightedScore
+        RebuildJob->>RankingContract: occurredAt 기준 dateKey 및 scoreDelta 계산
+        RankingContract-->>RebuildJob: yyyyMMdd, productId, weightedScore
         alt 조회/좋아요/주문 이벤트
             RebuildJob->>Redis: ZINCRBY ranking:rebuild:all:{yyyyMMdd} weightedScore productId
         else 상품 삭제 이벤트
@@ -633,6 +640,7 @@ sequenceDiagram
     end
     RebuildJob->>Redis: EXPIRE ranking:rebuild:* 2 days
     RebuildJob->>Redis: RENAME ranking:rebuild:* -> ranking:* 운영 Key
+    Note over RebuildJob, Redis: 운영 Key 교체 중 실시간 Consumer 충돌 방지는 후속 운영 절차로 결정한다.
 ```
 
 ```mermaid

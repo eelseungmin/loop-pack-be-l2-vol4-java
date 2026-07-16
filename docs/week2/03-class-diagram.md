@@ -161,6 +161,41 @@ classDiagram
         +String date
     }
 
+    class OutboxEventLog {
+        <<modules/event-contract>>
+        +Long id
+        +String eventType
+        +String status
+        +String payload
+        +LocalDateTime createdAt
+    }
+
+    class ProductRankingEvent {
+        <<modules/ranking-contract>>
+        +String eventId
+        +RankingEventType rankingEventType
+        +Long productId
+        +BigDecimal price
+        +int amount
+        +LocalDateTime occurredAt
+    }
+
+    class RankingEventType {
+        <<modules/ranking-contract>>
+        VIEW
+        LIKE
+        ORDER
+        PRODUCT_DELETED
+    }
+
+    class RankingKeyPolicy {
+        <<modules/ranking-contract>>
+        +dateKey(occurredAt): String
+        +rankingKey(dateKey): String
+        +handledKey(dateKey): String
+        +rebuildRankingKey(dateKey): String
+    }
+
     class PaymentMethod {
         <<enumeration>>
         CARD
@@ -314,7 +349,7 @@ classDiagram
     }
     class RankingRebuildEventRepository {
         <<interface>>
-        +findEventsForRebuild(startAt, endAt)
+        +findEventsForRebuild(referenceDate): List~ProductRankingEvent~
     }
     class KafkaEventProducer {
         <<interface>>
@@ -334,6 +369,7 @@ classDiagram
         +addMetrics(eventId, payload)
     }
     class RankingScorePolicy {
+        <<modules/ranking-contract>>
         +calculate(event): double
         +resolveDateKey(event): String
     }
@@ -350,12 +386,19 @@ classDiagram
     
     OutboxRelayScheduler ..> KafkaEventProducer
     MetricsKafkaConsumer ..> MetricsUpdateService
+    MetricsKafkaConsumer ..> ProductRankingEvent
+    RankingKafkaConsumer ..> ProductRankingEvent
     RankingKafkaConsumer ..> RankingScorePolicy
+    RankingKafkaConsumer ..> RankingKeyPolicy
     RankingKafkaConsumer ..> RankingRedisRepository
     RankingRebuildJob ..> RankingRebuildEventRepository
     RankingRebuildJob ..> RankingScorePolicy
+    RankingRebuildJob ..> RankingKeyPolicy
     RankingRebuildJob ..> RankingRedisRepository
+    RankingRebuildEventRepository ..> OutboxEventLog
+    RankingRebuildEventRepository ..> ProductRankingEvent
     RankingFacade ..> RankingRedisRepository
+    RankingFacade ..> RankingKeyPolicy
     RankingFacade ..> ProductRepository
     RankingFacade ..> RankingItem
     ProductFacade ..> RankingRedisRepository
