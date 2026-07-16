@@ -1,6 +1,10 @@
 package com.loopers.application.product;
 
 import com.loopers.application.brand.BrandRepository;
+import com.loopers.application.outbox.OutboxEventRepository;
+import com.loopers.domain.outbox.EventType;
+import com.loopers.domain.outbox.OutboxEvent;
+import com.loopers.domain.outbox.OutboxEventStatus;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.application.product.ProductRepository;
 import com.loopers.support.error.CoreException;
@@ -12,6 +16,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
+import java.time.ZonedDateTime;
 
 @Slf4j
 @Component
@@ -21,6 +26,7 @@ public class ProductAdminFacade {
     private final ProductRepository productRepository;
     private final BrandRepository brandRepository;
     private final RedisTemplate<String, String> defaultRedisTemplate;
+    private final OutboxEventRepository outboxEventRepository;
 
     @Transactional
     public Long registerProduct(Long brandId, String name, BigDecimal price, int initialStock) {
@@ -48,7 +54,12 @@ public class ProductAdminFacade {
                 .orElseThrow(() -> new CoreException(ErrorType.PRODUCT_NOT_FOUND));
         product.delete();
         productRepository.save(product);
+        outboxEventRepository.save(new OutboxEvent(EventType.PRODUCT_DELETED, productDeletedPayload(id), OutboxEventStatus.INIT));
         evictCache(id);
+    }
+
+    private String productDeletedPayload(Long productId) {
+        return "{\"productId\":" + productId + ",\"deletedAt\":\"" + ZonedDateTime.now() + "\"}";
     }
 
     private void evictCache(Long id) {

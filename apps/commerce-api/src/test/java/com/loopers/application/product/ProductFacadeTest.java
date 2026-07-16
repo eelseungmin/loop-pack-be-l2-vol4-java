@@ -4,6 +4,8 @@ import com.loopers.domain.brand.BrandModel;
 import com.loopers.application.brand.BrandRepository;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.application.product.ProductRepository;
+import com.loopers.application.ranking.ProductRankingInfo;
+import com.loopers.application.ranking.RankingRedisRepository;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -18,6 +20,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.BDDMockito.given;
@@ -47,6 +50,9 @@ class ProductFacadeTest {
     @Mock
     private com.loopers.domain.event.EventPublisher eventPublisher;
 
+    @Mock
+    private RankingRedisRepository rankingRedisRepository;
+
     @Test
     @DisplayName("상품 상세 조회 시 UserActionLogEvent(LOW)가 발행된다.")
     void getProduct_ShouldPublishUserActionLogEvent() {
@@ -67,6 +73,33 @@ class ProductFacadeTest {
 
         // then
         verify(eventPublisher).publish(org.mockito.ArgumentMatchers.any(com.loopers.domain.user.UserActionLogEvent.class));
+    }
+
+    @Test
+    @DisplayName("상품 상세 조회 시 오늘 기준 랭킹 정보가 있으면 함께 반환한다.")
+    void getProduct_WhenTodayRankingExists_ShouldReturnRankingInfo() {
+        // given
+        Long productId = 1L;
+        BrandModel brand = new BrandModel("Nike");
+        ReflectionTestUtils.setField(brand, "id", 10L);
+        ProductModel product = new ProductModel(10L, "Air Max", new BigDecimal("1000.0000"));
+        ReflectionTestUtils.setField(product, "id", productId);
+
+        given(defaultRedisTemplate.opsForValue()).willReturn(valueOperations);
+        given(valueOperations.get("product:detail::" + productId)).willReturn(null);
+        given(productRepository.findById(productId)).willReturn(Optional.of(product));
+        given(brandRepository.findById(10L)).willReturn(Optional.of(brand));
+        given(rankingRedisRepository.findProductRanking(org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.eq(productId)))
+            .willReturn(Optional.of(new ProductRankingInfo("20260716", 3, 12.5)));
+
+        // when
+        ProductInfo productInfo = productFacade.getProduct(productId);
+
+        // then
+        assertThat(productInfo.ranking()).isNotNull();
+        assertThat(productInfo.ranking().date()).isEqualTo("20260716");
+        assertThat(productInfo.ranking().rank()).isEqualTo(3);
+        assertThat(productInfo.ranking().score()).isEqualTo(12.5);
     }
 
     @Test
