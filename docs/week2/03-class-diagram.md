@@ -311,7 +311,10 @@ classDiagram
     class OutboxEventRepository {
         <<interface>>
         +save(outboxEvent)
-        +findEventsForRankingRebuild(startAt, endAt)
+    }
+    class RankingRebuildEventRepository {
+        <<interface>>
+        +findEventsForRebuild(startAt, endAt)
     }
     class KafkaEventProducer {
         <<interface>>
@@ -349,7 +352,7 @@ classDiagram
     MetricsKafkaConsumer ..> MetricsUpdateService
     RankingKafkaConsumer ..> RankingScorePolicy
     RankingKafkaConsumer ..> RankingRedisRepository
-    RankingRebuildJob ..> OutboxEventRepository
+    RankingRebuildJob ..> RankingRebuildEventRepository
     RankingRebuildJob ..> RankingScorePolicy
     RankingRebuildJob ..> RankingRedisRepository
     RankingFacade ..> RankingRedisRepository

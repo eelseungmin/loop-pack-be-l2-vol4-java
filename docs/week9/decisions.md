@@ -243,3 +243,19 @@ Redis가 잠깐 장애였다가 데이터는 유지되는 상황만 고려
 선택지 C: Redis persistence/RDB/AOF에 의존하고 애플리케이션 재빌드는 다루지 않음
 장점: 애플리케이션 설계는 단순함
 단점: Redis 운영 설정에 강하게 의존하고, 애플리케이션 문서상 복구 설명이 약함
+
+의사결정 질문입니다.
+RankingRebuildJob이 Redis 유실 복구를 위해 읽을 원천 이벤트 로그를 어디에서 가져오게 할까요?
+선택지 A: commerce-streamer가 직접 outbox_events 테이블을 조회
+장점: 재빌드 Job이 streamer 안에서 완결됨
+단점: 현재 Outbox 엔티티/Repository가 commerce-api에 있어 중복 모델 또는 공용 모듈 이동이 필요함
+선택지 B: Outbox/Event 조회 모델을 공용 모듈로 분리
+장점: commerce-api, commerce-streamer가 같은 이벤트 로그 모델을 공유함
+단점: 구조 변경 범위가 커서 별도 리팩토링 커밋이 필요함
+선택지 C: 재빌드 Job은 포트만 유지하고 실제 Outbox 조회 구현은 보류
+장점: 현재 구현 범위를 안정적으로 유지
+단점: 운영 가능한 완전한 재빌드 기능은 아직 아님
+
+결정: C
+재빌드 Job은 `RankingRebuildEventRepository` 포트와 Redis 재계산/교체 로직까지만 유지한다.
+실제 `OUTBOX_EVENTS` 조회 구현은 이번 범위에서 보류한다.

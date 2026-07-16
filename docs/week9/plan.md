@@ -38,7 +38,8 @@
 - 상품 상세 조회의 랭킹은 항상 서버의 오늘 날짜 기준이며, 랭킹에 없으면 `null`이다.
 - 상품 논리 삭제 시 `PRODUCT_DELETED` Outbox 이벤트를 발행하고, `RankingKafkaConsumer`가 최근 TTL 범위의 Redis ZSET에서 해당 상품을 제거한다.
 - 랭킹 API 조회 시점에 남아 있는 삭제 상품은 2차 방어로 제외한다.
-- Redis 데이터 유실 시 `OUTBOX_EVENTS` 등 원천 이벤트 로그를 기반으로 오늘/전일 랭킹을 `ranking:rebuild:*` 임시 Key에 재계산한 뒤 운영 Key로 교체한다.
+- Redis 데이터 유실 시 오늘/전일 랭킹을 `ranking:rebuild:*` 임시 Key에 재계산한 뒤 운영 Key로 교체하는 재빌드 로직과 포트를 둔다.
+- 단, 실제 `OUTBOX_EVENTS` 조회 구현은 이번 범위에서 보류한다.
 
 ## 3. 단계별 구현 계획
 
@@ -156,7 +157,9 @@
 
 ### Step 7. Redis 랭킹 유실 재빌드 Job
 
-**목표:** Redis 랭킹 데이터가 유실된 경우 `OUTBOX_EVENTS` 등 원천 이벤트 로그를 이용해 오늘/전일 랭킹을 재계산한다.
+**목표:** Redis 랭킹 데이터가 유실된 경우 원천 이벤트 로그를 이용해 오늘/전일 랭킹을 재계산할 수 있도록 재빌드 Job과 이벤트 조회 포트를 마련한다.
+
+> 범위 조정: 실제 `OUTBOX_EVENTS` 조회 구현은 보류한다. 이번 단계에서는 `RankingRebuildEventRepository` 포트, 재계산 로직, Redis 임시 Key 교체 로직까지만 구현한다.
 
 1. **Red**
    - `RankingRebuildJobTest`를 작성한다.
@@ -165,12 +168,12 @@
    - 재빌드 완료 후 `ranking:rebuild:*` 임시 Key가 운영 Key(`ranking:*`)로 교체되는지 검증한다.
 2. **Green**
    - `RankingRebuildJob`을 구현한다.
-   - `OUTBOX_EVENTS`에서 대상 기간의 랭킹 관련 이벤트를 조회한다.
+   - 대상 기간의 랭킹 관련 이벤트는 `RankingRebuildEventRepository` 포트로 조회한다.
    - `RankingScorePolicy`를 재사용해 점수를 계산하고 Redis 임시 Key에 적재한다.
    - 재빌드 완료 후 임시 Key를 운영 Key로 교체한다.
 3. **Refactor**
    - 재빌드 대상 기간 계산(today/yesterday)을 설정 값 또는 정책 클래스로 분리한다.
-   - 운영 Key 교체 중 Consumer와 충돌하지 않도록 실행 절차를 문서화한다.
+   - 실제 `OUTBOX_EVENTS` 조회 구현과 운영 Key 교체 중 Consumer 충돌 방지 절차는 후속 의사결정으로 남긴다.
 
 **검증:** `./gradlew :apps:commerce-streamer:test`
 
@@ -184,7 +187,7 @@
    - 같은 `eventId`를 두 번 처리해도 ZSET 점수가 한 번만 반영되는지 검증한다.
    - 이벤트 발생일이 전일인 이벤트가 전일 Key에 반영되고 TTL 내 조회 가능한지 검증한다.
    - `MetricsKafkaConsumer`와 `RankingKafkaConsumer`가 독립 Consumer Group으로 같은 이벤트를 각각 처리하는지 검증한다.
-   - Redis 랭킹 Key 삭제 후 재빌드 Job으로 오늘/전일 랭킹이 복구되는지 검증한다.
+   - Redis 랭킹 Key 삭제 후 재빌드 Job의 포트 기반 재계산 로직으로 오늘/전일 랭킹이 복구되는지 검증한다.
 2. **Green**
    - 필요한 테스트 설정과 fixture만 최소 추가한다.
    - API와 Consumer를 실제 빈으로 묶어 흐름을 검증한다.
@@ -223,7 +226,8 @@
 - [ ] 상품 논리 삭제 시 `PRODUCT_DELETED` Outbox 이벤트가 발행되고, `RankingKafkaConsumer`가 최근 TTL 범위의 랭킹 ZSET에서 해당 상품을 제거한다.
 - [ ] 삭제 이벤트 처리 지연 등으로 ZSET에 남아 있는 삭제 상품은 API 응답에서 제외된다.
 - [ ] 상품 상세 조회가 오늘 기준 랭킹 정보를 포함하고, 랭킹이 없으면 `null`을 반환한다.
-- [ ] Redis 데이터 유실 시 원천 이벤트 로그 기반 재빌드로 오늘/전일 랭킹을 복구할 수 있다.
+- [ ] Redis 데이터 유실 시 포트 기반 재빌드 로직으로 오늘/전일 랭킹을 복구할 수 있다.
+- [ ] 실제 `OUTBOX_EVENTS` 조회 구현은 보류 상태로 명시되어 있다.
 - [ ] 이벤트 발행 -> Consumer 처리 -> Redis ZSET 반영 -> API 조회 E2E 테스트가 통과한다.
 
 ## 6. 커밋 단위 제안

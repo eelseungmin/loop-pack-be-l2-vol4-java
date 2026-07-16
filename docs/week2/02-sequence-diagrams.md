@@ -611,20 +611,20 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
-    title Redis 랭킹 데이터 유실 시 Outbox 기반 재빌드
+    title Redis 랭킹 데이터 유실 시 포트 기반 재빌드
     participant Operator
     participant RebuildJob as RankingRebuildJob
-    participant Outbox as OUTBOX_EVENTS
+    participant EventSource as RankingRebuildEventRepository
     participant ScorePolicy as RankingScorePolicy
     participant Redis as Redis Ranking Store
 
     Operator->>RebuildJob: 오늘/전일 랭킹 재빌드 실행
-    RebuildJob->>Outbox: 대상 기간의 상품 이벤트 조회
+    RebuildJob->>EventSource: 대상 기간의 상품 이벤트 조회
+    Note over RebuildJob, EventSource: 실제 OUTBOX_EVENTS 조회 구현은 이번 범위에서 보류
     loop 이벤트별 재계산
         RebuildJob->>ScorePolicy: occurredAt 기준 dateKey 및 scoreDelta 계산
         ScorePolicy-->>RebuildJob: yyyyMMdd, productId, weightedScore
         alt 조회/좋아요/주문 이벤트
-            RebuildJob->>Redis: SADD ranking:rebuild:handled:{yyyyMMdd} eventId
             RebuildJob->>Redis: ZINCRBY ranking:rebuild:all:{yyyyMMdd} weightedScore productId
         else 상품 삭제 이벤트
             RebuildJob->>Redis: ZREM ranking:rebuild:all:{today} productId

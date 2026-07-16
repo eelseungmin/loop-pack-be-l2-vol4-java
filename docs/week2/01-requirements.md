@@ -140,7 +140,7 @@
 *   **Kafka 배치 리스너 (선택적 최적화):** 기본 설계는 단건 이벤트 처리로 검증한다. 트래픽 증가로 ZSET/DB 연산이 과도해질 경우 배치 리스너를 적용해 `(date, productId)` 단위로 점수를 합산한 뒤 Redis Pipeline 및 DB Batch Update로 처리량을 높인다.
 *   **Ranking API 조회:** `GET /api/v1/rankings?date=yyyyMMdd&size=20&page=1` 호출 시 Redis ZSET에서 상품 ID와 점수를 읽고, 상품 Repository로 상품/브랜드 정보를 조회해 랭킹 응답을 조합한다. 페이징 정책은 기존 프로젝트 API 정책을 따른다.
 *   **삭제 상품 처리:** 상품이 논리 삭제되면 상품 삭제 트랜잭션 안에서 `PRODUCT_DELETED` Outbox 이벤트를 기록하고, 기존 Outbox Relay가 Kafka로 발행한다. `RankingKafkaConsumer`는 이 이벤트를 소비해 최근 TTL 범위의 랭킹 ZSET에서 해당 `productId`를 제거한다. 현재 TTL이 2일이므로 삭제 시점 기준 오늘/전일 Key(`ranking:all:{yyyyMMdd}`)에서 `ZREM`을 수행한다. API 조회 시에는 삭제 이벤트 처리 지연 등으로 ZSET에 남아 있는 삭제 상품을 2차 방어로 제외한다.
-*   **Redis 유실 복구:** Redis 데이터가 유실된 경우, `OUTBOX_EVENTS` 등 원천 이벤트 로그에서 오늘/전일 이벤트를 다시 읽어 `ranking:rebuild:all:{yyyyMMdd}`, `ranking:rebuild:handled:{yyyyMMdd}` 임시 Key에 랭킹을 재계산한다. 재빌드가 완료되면 운영 Key(`ranking:all:{yyyyMMdd}`, `ranking:handled:{yyyyMMdd}`)로 교체한다.
+*   **Redis 유실 복구:** Redis 데이터가 유실된 경우, 원천 이벤트 로그에서 오늘/전일 이벤트를 다시 읽어 `ranking:rebuild:all:{yyyyMMdd}` 임시 Key에 랭킹을 재계산한 뒤 운영 Key(`ranking:all:{yyyyMMdd}`)로 교체하는 재빌드 구조를 둔다. 단, 실제 `OUTBOX_EVENTS` 조회 구현은 이번 범위에서 보류하고, 재빌드 Job은 이벤트 조회 포트(`RankingRebuildEventRepository`)를 통해 입력을 받도록 한다.
 *   **상품 상세 랭킹 포함:** `GET /api/v1/products/{productId}` 응답에는 서버의 오늘 날짜 기준 랭킹 정보를 함께 반환한다. 해당 상품이 오늘 랭킹에 없으면 랭킹 정보는 `null`로 반환한다.
 
 ### 2.13 글로벌 대기열 (Queue) 정책
@@ -285,7 +285,7 @@
 *   동일 `eventId`가 재처리되어도 Redis ZSET 점수가 중복 가산되지 않는다.
 *   `MetricsKafkaConsumer`와 `RankingKafkaConsumer`는 서로 다른 Consumer Group으로 독립 소비한다.
 *   `RankingKafkaConsumer`는 Redis 반영 성공 후 Kafka offset을 커밋한다.
-*   Redis 데이터 유실 시 원천 이벤트 로그를 이용해 오늘/전일 랭킹을 재빌드할 수 있다.
+*   Redis 데이터 유실 시 포트 기반 재빌드 로직으로 오늘/전일 랭킹을 재빌드할 수 있다. 실제 `OUTBOX_EVENTS` 조회 구현은 보류한다.
 
 ### 5.2 Ranking API
 *   랭킹 Page 조회 시 정상적으로 랭킹 정보가 반환된다.
