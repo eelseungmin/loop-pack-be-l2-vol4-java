@@ -16,7 +16,7 @@ import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
-import java.time.ZonedDateTime;
+import java.time.LocalDateTime;
 
 @Slf4j
 @Component
@@ -54,12 +54,12 @@ public class ProductAdminFacade {
                 .orElseThrow(() -> new CoreException(ErrorType.PRODUCT_NOT_FOUND));
         product.delete();
         productRepository.save(product);
-        outboxEventRepository.save(new OutboxEvent(EventType.PRODUCT_DELETED, productDeletedPayload(id), OutboxEventStatus.INIT));
+        outboxEventRepository.save(new OutboxEvent(EventType.PRODUCT_RANKING_EVENT, productDeletedPayload(id), OutboxEventStatus.INIT));
         evictCache(id);
     }
 
     private String productDeletedPayload(Long productId) {
-        return "{\"productId\":" + productId + ",\"deletedAt\":\"" + ZonedDateTime.now() + "\"}";
+        return "{\"rankingEventType\":\"PRODUCT_DELETED\",\"productId\":" + productId + ",\"price\":0,\"amount\":0,\"occurredAt\":\"" + LocalDateTime.now() + "\"}";
     }
 
     private void evictCache(Long id) {

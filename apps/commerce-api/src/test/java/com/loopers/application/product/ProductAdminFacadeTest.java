@@ -111,7 +111,7 @@ class ProductAdminFacadeTest {
     }
 
     @Test
-    @DisplayName("상품을 삭제하면 PRODUCT_DELETED Outbox 이벤트가 저장된다.")
+    @DisplayName("상품을 삭제하면 PRODUCT_RANKING_EVENT Outbox 이벤트가 저장된다.")
     void deleteProduct_ShouldSaveProductDeletedOutboxEvent() {
         // given
         Long productId = 10L;
@@ -127,9 +127,11 @@ class ProductAdminFacadeTest {
         ArgumentCaptor<OutboxEvent> captor = forClass(OutboxEvent.class);
         verify(outboxEventRepository).save(captor.capture());
         OutboxEvent outboxEvent = captor.getValue();
-        assertThat(outboxEvent.getEventType()).isEqualTo(EventType.PRODUCT_DELETED);
+        assertThat(outboxEvent.getEventType()).isEqualTo(EventType.PRODUCT_RANKING_EVENT);
         assertThat(outboxEvent.getStatus()).isEqualTo(OutboxEventStatus.INIT);
+        assertThat(outboxEvent.getPayload()).contains("\"rankingEventType\":\"PRODUCT_DELETED\"");
         assertThat(outboxEvent.getPayload()).contains("\"productId\":10");
-        assertThat(outboxEvent.getPayload()).contains("\"deletedAt\"");
+        assertThat(outboxEvent.getPayload()).contains("\"occurredAt\"");
+        assertThat(outboxEvent.getPayload()).doesNotContain("\"eventId\"");
     }
 }

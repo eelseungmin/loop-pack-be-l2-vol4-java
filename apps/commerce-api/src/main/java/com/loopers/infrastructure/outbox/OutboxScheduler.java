@@ -1,6 +1,9 @@
 package com.loopers.infrastructure.outbox;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.loopers.application.outbox.OutboxEventRepository;
+import com.loopers.domain.outbox.EventType;
 import com.loopers.domain.outbox.OutboxEvent;
 import com.loopers.domain.outbox.OutboxEventStatus;
 import lombok.RequiredArgsConstructor;
@@ -20,6 +23,7 @@ public class OutboxScheduler {
 
     private final OutboxEventRepository outboxEventRepository;
     private final KafkaTemplate<Object, Object> kafkaTemplate;
+    private final ObjectMapper objectMapper;
 
     @Scheduled(fixedDelay = 3000)
     public void run() {
@@ -33,9 +37,9 @@ public class OutboxScheduler {
                 log.info("Reprocessing outbox event: id={}, type={}", event.getId(), event.getEventType());
                 event.increaseRetryCount();
 
-                String topic = event.getEventType().name();
+                String topic = topicOf(event);
                 String key = event.getId().toString();
-                String payload = event.getPayload();
+                String payload = payloadOf(event);
 
                 kafkaTemplate.send(topic, key, payload)
                         .whenComplete((result, ex) -> {
@@ -63,5 +67,26 @@ public class OutboxScheduler {
             event.recordError(e.getMessage());
         }
         outboxEventRepository.save(event);
+    }
+
+    private String topicOf(OutboxEvent outboxEvent) {
+        if (outboxEvent.getEventType() == EventType.PRODUCT_RANKING_EVENT) {
+            return "product-events";
+        }
+        return outboxEvent.getEventType().name();
+    }
+
+    private String payloadOf(OutboxEvent outboxEvent) {
+        if (outboxEvent.getEventType() != EventType.PRODUCT_RANKING_EVENT) {
+            return outboxEvent.getPayload();
+        }
+
+        try {
+            ObjectNode payload = (ObjectNode) objectMapper.readTree(outboxEvent.getPayload());
+            payload.put("eventId", outboxEvent.getId().toString());
+            return objectMapper.writeValueAsString(payload);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to inject ranking event id.", e);
+        }
     }
 }
