@@ -250,18 +250,18 @@
 - [x] `MetricsKafkaConsumer`와 `RankingKafkaConsumer`가 서로 다른 Consumer Group으로 같은 이벤트를 독립 소비한다.
 - [x] `MetricsKafkaConsumer`는 `product_metrics`만 갱신하고, `RankingKafkaConsumer`는 Redis 랭킹만 갱신한다.
 - [x] `RankingKafkaConsumer`는 Redis 반영 성공 후 Kafka offset을 커밋한다.
-- [ ] `modules:ranking-contract`가 랭킹 표준 이벤트, 점수 정책, Key/date 정책을 제공한다.
-- [ ] `commerce-api`와 `commerce-streamer`가 같은 `RankingKeyPolicy`를 사용한다.
-- [ ] `modules:event-contract`가 읽기 전용 `OutboxEventLog` 계약을 제공한다.
-- [ ] `PRODUCT_RANKING_EVENT` raw payload에는 `eventId`를 저장하지 않고, Relay/재빌드 조회 시 `OUTBOX_EVENTS.id`를 주입한다.
+- [x] `modules:ranking-contract`가 랭킹 표준 이벤트, 점수 정책, Key/date 정책을 제공한다.
+- [x] `commerce-api`와 `commerce-streamer`가 같은 `RankingKeyPolicy`를 사용한다.
+- [x] `modules:event-contract`가 읽기 전용 `OutboxEventLog` 계약을 제공한다.
+- [x] `PRODUCT_RANKING_EVENT` raw payload에는 `eventId`를 저장하지 않고, Relay/재빌드 조회 시 `OUTBOX_EVENTS.id`를 주입한다.
 - [x] `GET /api/v1/rankings`가 상품 정보를 포함한 랭킹 페이지를 반환한다.
-- [ ] 상품 논리 삭제 시 `rankingEventType=PRODUCT_DELETED`인 `PRODUCT_RANKING_EVENT`가 발행되고, `RankingKafkaConsumer`가 최근 TTL 범위의 랭킹 ZSET에서 해당 상품을 제거한다.
+- [x] 상품 논리 삭제 시 `rankingEventType=PRODUCT_DELETED`인 `PRODUCT_RANKING_EVENT`가 발행되고, `RankingKafkaConsumer`가 최근 TTL 범위의 랭킹 ZSET에서 해당 상품을 제거한다.
 - [x] 삭제 이벤트 처리 지연 등으로 ZSET에 남아 있는 삭제 상품은 API 응답에서 제외된다.
 - [x] 상품 상세 조회가 오늘 기준 랭킹 정보를 포함하고, 랭킹이 없으면 `null`을 반환한다.
-- [ ] Redis 데이터 유실 시 `OUTBOX_EVENTS`의 `PRODUCT_RANKING_EVENT`를 조회해 오늘/전일 랭킹을 복구할 수 있다.
-- [ ] 재빌드 조회는 `INIT`, `COMPLETED` 상태를 포함하고 `FAILED` 상태를 제외한다.
-- [ ] 재빌드 후보는 `createdAt` 기준 버퍼 기간으로 조회하고, 실제 반영 날짜는 payload의 `occurredAt` 기준으로 계산한다.
-- [ ] 운영 Key 교체 중 실시간 Consumer 충돌 방지는 후속 운영 절차로 명시되어 있다.
+- [x] Redis 데이터 유실 시 `OUTBOX_EVENTS`의 `PRODUCT_RANKING_EVENT`를 조회해 오늘/전일 랭킹을 복구할 수 있다.
+- [x] 재빌드 조회는 `INIT`, `COMPLETED` 상태를 포함하고 `FAILED` 상태를 제외한다.
+- [x] 재빌드 후보는 `createdAt` 기준 버퍼 기간으로 조회하고, 실제 반영 날짜는 payload의 `occurredAt` 기준으로 계산한다.
+- [x] 운영 Key 교체 중 실시간 Consumer 충돌 방지는 후속 운영 절차로 명시되어 있다.
 - [ ] 이벤트 발행 -> Consumer 처리 -> Redis ZSET 반영 -> API 조회 E2E 테스트가 통과한다.
 
 ## 6. 커밋 단위 제안
