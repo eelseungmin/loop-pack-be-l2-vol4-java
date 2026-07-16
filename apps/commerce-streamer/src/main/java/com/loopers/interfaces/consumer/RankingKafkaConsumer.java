@@ -1,6 +1,8 @@
 package com.loopers.interfaces.consumer;
 
 import com.loopers.application.ranking.RankingRedisRepository;
+import com.loopers.domain.ranking.ProductRankingEvent;
+import com.loopers.domain.ranking.RankingKeyPolicy;
 import com.loopers.domain.ranking.RankingEventType;
 import com.loopers.domain.ranking.RankingScorePolicy;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -11,13 +13,16 @@ import org.springframework.stereotype.Component;
 public class RankingKafkaConsumer {
 
     private final RankingScorePolicy rankingScorePolicy;
+    private final RankingKeyPolicy rankingKeyPolicy;
     private final RankingRedisRepository rankingRedisRepository;
 
     public RankingKafkaConsumer(
         RankingScorePolicy rankingScorePolicy,
+        RankingKeyPolicy rankingKeyPolicy,
         RankingRedisRepository rankingRedisRepository
     ) {
         this.rankingScorePolicy = rankingScorePolicy;
+        this.rankingKeyPolicy = rankingKeyPolicy;
         this.rankingRedisRepository = rankingRedisRepository;
     }
 
@@ -32,7 +37,7 @@ public class RankingKafkaConsumer {
             return;
         }
 
-        String dateKey = rankingScorePolicy.dateKey(event.occurredAt());
+        String dateKey = rankingKeyPolicy.dateKey(event.occurredAt());
         double score = rankingScorePolicy.calculateScore(event.eventType(), event.price(), event.amount());
 
         rankingRedisRepository.incrementScoreIfFirstHandled(

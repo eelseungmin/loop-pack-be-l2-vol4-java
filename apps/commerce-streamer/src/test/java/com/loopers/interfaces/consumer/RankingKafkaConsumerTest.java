@@ -1,6 +1,8 @@
 package com.loopers.interfaces.consumer;
 
 import com.loopers.application.ranking.RankingRedisRepository;
+import com.loopers.domain.ranking.ProductRankingEvent;
+import com.loopers.domain.ranking.RankingKeyPolicy;
 import com.loopers.domain.ranking.RankingEventType;
 import com.loopers.domain.ranking.RankingScorePolicy;
 import org.junit.jupiter.api.DisplayName;
@@ -24,6 +26,7 @@ class RankingKafkaConsumerTest {
         RankingRedisRepository rankingRedisRepository = mock(RankingRedisRepository.class);
         RankingKafkaConsumer rankingKafkaConsumer = new RankingKafkaConsumer(
             new RankingScorePolicy(),
+            new RankingKeyPolicy(),
             rankingRedisRepository
         );
         Acknowledgment acknowledgment = mock(Acknowledgment.class);
@@ -53,6 +56,7 @@ class RankingKafkaConsumerTest {
         RankingRedisRepository rankingRedisRepository = mock(RankingRedisRepository.class);
         RankingKafkaConsumer rankingKafkaConsumer = new RankingKafkaConsumer(
             new RankingScorePolicy(),
+            new RankingKeyPolicy(),
             rankingRedisRepository
         );
         Acknowledgment acknowledgment = mock(Acknowledgment.class);
@@ -84,6 +88,7 @@ class RankingKafkaConsumerTest {
         RankingRedisRepository rankingRedisRepository = mock(RankingRedisRepository.class);
         RankingKafkaConsumer rankingKafkaConsumer = new RankingKafkaConsumer(
             new RankingScorePolicy(),
+            new RankingKeyPolicy(),
             rankingRedisRepository
         );
         Acknowledgment acknowledgment = mock(Acknowledgment.class);

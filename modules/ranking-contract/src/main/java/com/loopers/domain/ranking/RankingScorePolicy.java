@@ -3,8 +3,6 @@ package com.loopers.domain.ranking;
 import org.springframework.stereotype.Component;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 
 @Component
 public class RankingScorePolicy {
@@ -12,7 +10,6 @@ public class RankingScorePolicy {
     private static final double VIEW_WEIGHT = 0.1;
     private static final double LIKE_WEIGHT = 0.2;
     private static final double ORDER_WEIGHT = 0.6;
-    private static final DateTimeFormatter DATE_KEY_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
 
     public double calculateScore(RankingEventType eventType, BigDecimal price, int amount) {
         return switch (eventType) {
@@ -21,9 +18,5 @@ public class RankingScorePolicy {
             case ORDER -> ORDER_WEIGHT * Math.log(price.multiply(BigDecimal.valueOf(amount)).doubleValue() + 1);
             case PRODUCT_DELETED -> throw new IllegalArgumentException("Product delete event does not have ranking score.");
         };
-    }
-
-    public String dateKey(LocalDateTime occurredAt) {
-        return occurredAt.format(DATE_KEY_FORMATTER);
     }
 }

@@ -3,6 +3,7 @@ package com.loopers.infrastructure.ranking;
 import com.loopers.application.ranking.RankingEntry;
 import com.loopers.application.ranking.ProductRankingInfo;
 import com.loopers.application.ranking.RankingRedisRepository;
+import com.loopers.domain.ranking.RankingKeyPolicy;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Component;
@@ -15,12 +16,15 @@ import java.util.Set;
 @Component
 public class RankingRedisRepositoryImpl implements RankingRedisRepository {
 
-    private static final String RANKING_KEY_PREFIX = "ranking:all:";
-
     private final RedisTemplate<String, String> defaultRedisTemplate;
+    private final RankingKeyPolicy rankingKeyPolicy;
 
-    public RankingRedisRepositoryImpl(RedisTemplate<String, String> defaultRedisTemplate) {
+    public RankingRedisRepositoryImpl(
+        RedisTemplate<String, String> defaultRedisTemplate,
+        RankingKeyPolicy rankingKeyPolicy
+    ) {
         this.defaultRedisTemplate = defaultRedisTemplate;
+        this.rankingKeyPolicy = rankingKeyPolicy;
     }
 
     @Override
@@ -28,7 +32,7 @@ public class RankingRedisRepositoryImpl implements RankingRedisRepository {
         long start = (long) Math.max(page - 1, 0) * size;
         long end = start + size - 1;
         Set<ZSetOperations.TypedTuple<String>> tuples = defaultRedisTemplate.opsForZSet()
-            .reverseRangeWithScores(RANKING_KEY_PREFIX + dateKey, start, end);
+            .reverseRangeWithScores(rankingKeyPolicy.rankingKey(dateKey), start, end);
 
         if (tuples == null || tuples.isEmpty()) {
             return List.of();
@@ -48,13 +52,13 @@ public class RankingRedisRepositoryImpl implements RankingRedisRepository {
 
     @Override
     public long count(String dateKey) {
-        Long size = defaultRedisTemplate.opsForZSet().size(RANKING_KEY_PREFIX + dateKey);
+        Long size = defaultRedisTemplate.opsForZSet().size(rankingKeyPolicy.rankingKey(dateKey));
         return size == null ? 0L : size;
     }
 
     @Override
     public Optional<ProductRankingInfo> findProductRanking(String dateKey, Long productId) {
-        String rankingKey = RANKING_KEY_PREFIX + dateKey;
+        String rankingKey = rankingKeyPolicy.rankingKey(dateKey);
         String productKey = String.valueOf(productId);
         Long rank = defaultRedisTemplate.opsForZSet().reverseRank(rankingKey, productKey);
         if (rank == null) {

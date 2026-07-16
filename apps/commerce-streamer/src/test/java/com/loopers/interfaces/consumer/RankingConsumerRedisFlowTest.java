@@ -1,5 +1,6 @@
 package com.loopers.interfaces.consumer;
 
+import com.loopers.domain.ranking.ProductRankingEvent;
 import com.loopers.domain.ranking.RankingEventType;
 import com.loopers.testcontainers.RedisTestContainersConfig;
 import org.junit.jupiter.api.BeforeEach;

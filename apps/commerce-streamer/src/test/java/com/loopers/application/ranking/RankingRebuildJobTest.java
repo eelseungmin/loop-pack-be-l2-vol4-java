@@ -1,5 +1,7 @@
 package com.loopers.application.ranking;
 
+import com.loopers.domain.ranking.ProductRankingEvent;
+import com.loopers.domain.ranking.RankingKeyPolicy;
 import com.loopers.domain.ranking.RankingEventType;
 import com.loopers.domain.ranking.RankingScorePolicy;
 import org.junit.jupiter.api.DisplayName;
@@ -25,7 +27,8 @@ class RankingRebuildJobTest {
         RankingRebuildJob rankingRebuildJob = new RankingRebuildJob(
             rebuildEventRepository,
             rankingRedisRepository,
-            new RankingScorePolicy()
+            new RankingScorePolicy(),
+            new RankingKeyPolicy()
         );
         LocalDate today = LocalDate.of(2026, 7, 14);
         LocalDateTime from = LocalDateTime.of(2026, 7, 13, 0, 0);
@@ -35,9 +38,9 @@ class RankingRebuildJobTest {
 
         given(rebuildEventRepository.findEventsForRebuild(from, to))
             .willReturn(List.of(
-                new RankingRebuildEvent("event-1", RankingEventType.VIEW, 1L, BigDecimal.ZERO, 0, todayEventTime),
-                new RankingRebuildEvent("event-2", RankingEventType.ORDER, 2L, new BigDecimal("10000"), 2, yesterdayEventTime),
-                new RankingRebuildEvent("event-3", RankingEventType.PRODUCT_DELETED, 1L, BigDecimal.ZERO, 0, todayEventTime)
+                new ProductRankingEvent("event-1", RankingEventType.VIEW, 1L, BigDecimal.ZERO, 0, todayEventTime),
+                new ProductRankingEvent("event-2", RankingEventType.ORDER, 2L, new BigDecimal("10000"), 2, yesterdayEventTime),
+                new ProductRankingEvent("event-3", RankingEventType.PRODUCT_DELETED, 1L, BigDecimal.ZERO, 0, todayEventTime)
             ));
 
         // when

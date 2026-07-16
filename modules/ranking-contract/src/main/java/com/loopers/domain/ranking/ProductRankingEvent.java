@@ -1,16 +1,18 @@
-package com.loopers.interfaces.consumer;
-
-import com.loopers.domain.ranking.RankingEventType;
+package com.loopers.domain.ranking;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 public record ProductRankingEvent(
     String eventId,
-    RankingEventType eventType,
+    RankingEventType rankingEventType,
     Long productId,
     BigDecimal price,
     int amount,
     LocalDateTime occurredAt
 ) {
+
+    public RankingEventType eventType() {
+        return rankingEventType;
+    }
 }
