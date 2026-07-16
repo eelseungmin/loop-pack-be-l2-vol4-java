@@ -143,6 +143,24 @@ classDiagram
         +LocalDateTime handledAt
     }
 
+    class RankingItem {
+        <<DTO>>
+        +Long productId
+        +String productName
+        +String brandName
+        +BigDecimal price
+        +int rank
+        +double score
+        +String date
+    }
+
+    class ProductRankingInfo {
+        <<DTO>>
+        +int rank
+        +double score
+        +String date
+    }
+
     class PaymentMethod {
         <<enumeration>>
         CARD
@@ -229,6 +247,9 @@ classDiagram
     class BrandAdminFacade {
         +deleteBrand(brandId)
     }
+    class ProductAdminFacade {
+        +deleteProduct(productId)
+    }
     class LikeFacade {
         +addLike(userId, productId)
         +removeLike(userId, productId)
@@ -241,7 +262,11 @@ classDiagram
         +consumeCouponIssueEvent(ConsumerRecord)
     }
     class ProductFacade {
+        +retrieveProduct(productId)
         +retrieveProducts(condition, pageable)
+    }
+    class RankingFacade {
+        +retrieveRankings(date, page, size)
     }
 
     %% 도메인 서비스 (Domain Service) - 여러 엔티티의 협력이 필요한 순수 로직
@@ -269,6 +294,8 @@ classDiagram
     PaymentFallbackScheduler ..> PaymentFacade
     
     BrandAdminFacade ..> ProductRepository
+    ProductAdminFacade ..> ProductRepository
+    ProductAdminFacade ..> OutboxEventRepository
     
     LikeFacade ..> LikeRepository
     LikeFacade ..> ProductRepository
@@ -281,6 +308,11 @@ classDiagram
     class OutboxRelayScheduler {
         +publishPendingEvents()
     }
+    class OutboxEventRepository {
+        <<interface>>
+        +save(outboxEvent)
+        +findEventsForRankingRebuild(startAt, endAt)
+    }
     class KafkaEventProducer {
         <<interface>>
         +send(topic, partitionKey, payload)
@@ -288,11 +320,41 @@ classDiagram
     class MetricsKafkaConsumer {
         +consumeMetricsEvent(ConsumerRecord)
     }
+    class RankingKafkaConsumer {
+        +consumeRankingEvent(ConsumerRecord)
+    }
+    class RankingRebuildJob {
+        +rebuild(dateRange)
+    }
     class MetricsUpdateService {
         <<DomainService>>
         +addMetrics(eventId, payload)
     }
+    class RankingScorePolicy {
+        +calculate(event): double
+        +resolveDateKey(event): String
+    }
+    class RankingRedisRepository {
+        <<interface>>
+        +markHandled(dateKey, eventId): boolean
+        +increaseScore(dateKey, productId, score)
+        +findPage(dateKey, page, size)
+        +findRank(dateKey, productId)
+        +findScore(dateKey, productId)
+        +removeProductFromRecentRankings(productId)
+        +expire(dateKey, ttl)
+    }
     
     OutboxRelayScheduler ..> KafkaEventProducer
     MetricsKafkaConsumer ..> MetricsUpdateService
+    RankingKafkaConsumer ..> RankingScorePolicy
+    RankingKafkaConsumer ..> RankingRedisRepository
+    RankingRebuildJob ..> OutboxEventRepository
+    RankingRebuildJob ..> RankingScorePolicy
+    RankingRebuildJob ..> RankingRedisRepository
+    RankingFacade ..> RankingRedisRepository
+    RankingFacade ..> ProductRepository
+    RankingFacade ..> RankingItem
+    ProductFacade ..> RankingRedisRepository
+    ProductFacade ..> ProductRankingInfo
 ```
