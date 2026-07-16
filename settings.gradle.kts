@@ -5,6 +5,7 @@ include(
     ":apps:commerce-streamer",
     ":apps:commerce-batch",
     ":apps:pg-simulator",
+    ":tests:commerce-e2e",
     ":modules:jpa",
     ":modules:redis",
     ":modules:kafka",

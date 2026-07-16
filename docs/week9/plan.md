@@ -223,7 +223,7 @@
    - 테스트 fixture 중복을 줄인다.
    - 느린 E2E 테스트와 빠른 단위 테스트를 분리해 실행 비용을 관리한다.
 
-**검증:** `./gradlew :apps:commerce-api:test :apps:commerce-streamer:test`
+**검증:** `./gradlew :apps:commerce-api:test :apps:commerce-streamer:test :tests:commerce-e2e:test`
 
 ## 4. 선택적 최적화: Kafka 배치 리스너
 
@@ -262,7 +262,7 @@
 - [x] 재빌드 조회는 `INIT`, `COMPLETED` 상태를 포함하고 `FAILED` 상태를 제외한다.
 - [x] 재빌드 후보는 `createdAt` 기준 버퍼 기간으로 조회하고, 실제 반영 날짜는 payload의 `occurredAt` 기준으로 계산한다.
 - [x] 운영 Key 교체 중 실시간 Consumer 충돌 방지는 후속 운영 절차로 명시되어 있다.
-- [ ] 이벤트 발행 -> Consumer 처리 -> Redis ZSET 반영 -> API 조회 E2E 테스트가 통과한다.
+- [x] 이벤트 발행 -> Consumer 처리 -> Redis ZSET 반영 -> API 조회 E2E 테스트가 통과한다.
 
 ## 6. 커밋 단위 제안
 
