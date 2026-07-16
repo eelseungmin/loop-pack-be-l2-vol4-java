@@ -11,20 +11,26 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+
 @RequiredArgsConstructor
 @RestController
 @RequestMapping("/api/v1/rankings")
 public class RankingV1Controller {
 
+    private static final DateTimeFormatter DATE_KEY_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
+
     private final RankingFacade rankingFacade;
 
     @GetMapping
     public ApiResponse<PageResponse<RankingV1Dto.RankingResponse>> getRankings(
-        @RequestParam(value = "date") String date,
+        @RequestParam(value = "date", required = false) String date,
         @RequestParam(value = "page", defaultValue = "1") int page,
         @RequestParam(value = "size", defaultValue = "20") int size
     ) {
-        Page<RankingProductInfo> rankingPage = rankingFacade.getRankings(date, page, size);
+        String dateKey = date == null ? LocalDate.now().format(DATE_KEY_FORMATTER) : date;
+        Page<RankingProductInfo> rankingPage = rankingFacade.getRankings(dateKey, page, size);
         Page<RankingV1Dto.RankingResponse> responsePage = rankingPage.map(RankingV1Dto.RankingResponse::from);
         return ApiResponse.success(PageResponse.from(responsePage));
     }

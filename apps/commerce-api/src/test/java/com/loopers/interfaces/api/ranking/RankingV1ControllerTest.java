@@ -13,9 +13,12 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
 
 import static org.mockito.BDDMockito.given;
+import static org.mockito.Mockito.verify;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -62,5 +65,24 @@ class RankingV1ControllerTest {
             .andExpect(jsonPath("$.data.pageNumber").value(0))
             .andExpect(jsonPath("$.data.pageSize").value(20))
             .andExpect(jsonPath("$.data.totalElements").value(1));
+    }
+
+    @Test
+    @DisplayName("date가 없으면 서버 오늘 날짜로 랭킹 페이지를 조회한다.")
+    void getRankings_WhenDateMissing_ShouldUseToday() throws Exception {
+        // given
+        String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        given(rankingFacade.getRankings(today, 1, 20))
+            .willReturn(new PageImpl<>(List.of(), PageRequest.of(0, 20), 0));
+
+        // when & then
+        mockMvc.perform(get("/api/v1/rankings")
+                .param("page", "1")
+                .param("size", "20")
+                .contentType(MediaType.APPLICATION_JSON))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.meta.result").value("SUCCESS"));
+
+        verify(rankingFacade).getRankings(today, 1, 20);
     }
 }
