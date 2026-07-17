@@ -689,3 +689,26 @@ RankingRebuildJob이 운영 Key를 교체할 때, 실시간 RankingKafkaConsumer
 - 재빌드 조회 대상은 `event_type = PRODUCT_RANKING_EVENT`, `status in (INIT, COMPLETED)`이다. `FAILED` 상태는 기본 재빌드 대상에서 제외한다.
 - 재빌드 후보는 `createdAt` 기준 최근 3일 버퍼로 조회하고, 실제 랭킹 반영 여부는 payload 내부 `occurredAt`이 오늘/전일인지로 판단한다.
 - 운영 Key 교체 중 실시간 Consumer와의 충돌 방지는 이번 구현 범위에서 자동화하지 않는다. 후속 운영 절차에서 Consumer 일시 중단 또는 기준 시각 이후 이벤트 replay 중 하나를 선택해야 한다.
+
+## 랭킹 콜드 스타트 완화: score carry over
+
+### 결정
+- 일자 변경 직후 별도 `RankingCarryOverJob`이 전일 랭킹을 오늘 랭킹으로 일부 이월한다.
+- carry over 대상은 전일 `ranking:all:{yesterday}`의 Top 1,000 상품이다.
+- carry over 점수는 `todayInitialScore = yesterdayScore * 0.1`로 계산한다.
+- carry over 점수는 오늘 실시간 이벤트 점수와 같은 `ranking:all:{today}` ZSET에 합산한다.
+- 오늘 랭킹 ZSET TTL은 기존 랭킹 정책과 동일하게 2일이다.
+- 중복 실행 방지는 `ranking:carry-over:done:{yyyyMMdd}` Key로 처리하고 TTL은 2일이다.
+- `ranking:handled:{yyyyMMdd}`는 Kafka 이벤트 중복 방지 전용으로 유지하며 carry over는 이 Set을 수정하지 않는다.
+- carry over는 00:10까지 허용하고, 이후 실행되면 skip한다. 00:10 이전이라면 오늘 실시간 이벤트가 일부 적재되어 있어도 전일 점수를 합산한다.
+- 전일 랭킹 Key가 없거나 비어 있으면 점수 적재 없이 done key만 기록한다.
+- carry over 전 Top 1,000 상품을 DB로 조회해 삭제/미존재 상품은 제외한다. 삭제/미존재 상품 제외는 정상 처리로 보고, DB 인프라 예외는 carry over 실패로 처리한다.
+- carry over 실패는 `RankingKafkaConsumer`의 실시간 랭킹 적재를 막지 않는다.
+- `RankingRebuildJob`은 Redis 유실 복구, `RankingCarryOverJob`은 일자 변경 직후 콜드 스타트 완화로 책임을 분리한다.
+- 검증 범위는 단위/통합 테스트를 기본 완료 기준으로 삼고, E2E 검증은 선택 확장 항목으로 둔다.
+
+### 근거
+- 현재 랭킹은 전체 상품을 매일 재계산해 넣는 구조가 아니라 이벤트가 발생한 상품만 Redis ZSET에 누적하는 구조다.
+- 따라서 자정 직후 `ranking:all:{today}`가 비어 있거나 부족할 수 있으며, 전일 상위 일부 상품을 낮은 비율로 이월하면 초기 조회 품질을 완화할 수 있다.
+- Top 1,000과 10% 감쇠는 전체 10만 상품 seed보다 메모리/초기화 비용이 작고, 오늘 발생한 실시간 이벤트가 랭킹을 빠르게 갱신할 여지를 남긴다.
+- 삭제 상품은 API 조회 시에도 DB 조회로 2차 방어하지만, carry over 단계에서 먼저 제외하면 오늘 초기 랭킹 후보에 삭제 상품이 들어가는 시간을 줄일 수 있다.

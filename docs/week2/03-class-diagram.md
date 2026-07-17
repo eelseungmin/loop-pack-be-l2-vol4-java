@@ -194,6 +194,7 @@ classDiagram
         +rankingKey(dateKey): String
         +handledKey(dateKey): String
         +rebuildRankingKey(dateKey): String
+        +carryOverDoneKey(dateKey): String
     }
 
     class PaymentMethod {
@@ -364,6 +365,9 @@ classDiagram
     class RankingRebuildJob {
         +rebuild(dateRange)
     }
+    class RankingCarryOverJob {
+        +carryOver(today)
+    }
     class MetricsUpdateService {
         <<DomainService>>
         +addMetrics(eventId, payload)
@@ -378,9 +382,12 @@ classDiagram
         +markHandled(dateKey, eventId): boolean
         +increaseScore(dateKey, productId, score)
         +findPage(dateKey, page, size)
+        +findTopRankings(dateKey, limit)
         +findRank(dateKey, productId)
         +findScore(dateKey, productId)
         +removeProductFromRecentRankings(productId)
+        +markCarryOverDone(dateKey, ttl)
+        +isCarryOverDone(dateKey): boolean
         +expire(dateKey, ttl)
     }
     
@@ -395,6 +402,9 @@ classDiagram
     RankingRebuildJob ..> RankingScorePolicy
     RankingRebuildJob ..> RankingKeyPolicy
     RankingRebuildJob ..> RankingRedisRepository
+    RankingCarryOverJob ..> RankingKeyPolicy
+    RankingCarryOverJob ..> RankingRedisRepository
+    RankingCarryOverJob ..> ProductRepository
     RankingRebuildEventRepository ..> OutboxEventLog
     RankingRebuildEventRepository ..> ProductRankingEvent
     RankingFacade ..> RankingRedisRepository

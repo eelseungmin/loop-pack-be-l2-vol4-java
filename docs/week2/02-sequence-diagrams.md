@@ -548,6 +548,41 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
+    title Score Carry Over 기반 일간 랭킹 콜드 스타트 완화
+    participant Scheduler as RankingCarryOverScheduler
+    participant Job as RankingCarryOverJob
+    participant RankingStore as RankingRedisRepository
+    participant ProductRepository
+    participant Redis as Redis Ranking Store
+
+    Scheduler->>Job: 매일 00:00~00:10 carryOver(today)
+    Job->>RankingStore: EXISTS ranking:carry-over:done:{today}
+    alt 이미 처리됨
+        Job-->>Scheduler: skip
+    else 미처리
+        Job->>RankingStore: ZREVRANGE ranking:all:{yesterday} 0 999 WITHSCORES
+        alt 전일 랭킹 없음
+            Job->>RankingStore: SET ranking:carry-over:done:{today} EX 2 days
+        else 전일 Top N 존재
+            Job->>ProductRepository: findByIds(topProductIds)
+            alt DB 인프라 예외
+                ProductRepository--xJob: exception
+                Job-->>Scheduler: fail without done key
+            else 조회 성공
+                ProductRepository-->>Job: 삭제/미존재 제외 상품 목록
+                loop 정상 상품
+                    Job->>RankingStore: ZINCRBY ranking:all:{today} yesterdayScore*0.1 productId
+                end
+                Job->>RankingStore: EXPIRE ranking:all:{today} 2 days
+                Job->>RankingStore: SET ranking:carry-over:done:{today} EX 2 days
+            end
+        end
+    end
+    Note over Job,RankingStore: ranking:handled:{today}는 Kafka 이벤트 중복 방지 전용이므로 수정하지 않는다.
+```
+
+```mermaid
+sequenceDiagram
     title Kafka Consumer 기반 일간 랭킹 ZSET 적재
     participant Kafka as Kafka Broker
     participant Consumer as RankingKafkaConsumer

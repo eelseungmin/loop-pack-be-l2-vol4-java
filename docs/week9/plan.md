@@ -50,6 +50,15 @@
 - 재빌드 후보는 `createdAt` 기준 최근 3일 버퍼로 조회하고, 실제 반영 날짜는 payload의 `occurredAt` 기준으로 계산한다.
 - 운영 Key 교체 중 `RankingKafkaConsumer`와의 충돌 방지는 후속 운영 절차로 남긴다. Consumer 일시 중단 또는 기준 시각 이후 이벤트 replay 중 하나를 선택해야 한다.
 
+- 자정 직후 랭킹 콜드 스타트 완화를 위해 별도 `RankingCarryOverJob`을 둔다.
+- `RankingCarryOverJob`은 00:10 이전에 전일 `ranking:all:{yesterday}` Top 1,000을 읽어 오늘 `ranking:all:{today}`에 `yesterdayScore * 0.1`로 합산한다.
+- carry over 중복 실행 방지는 `ranking:carry-over:done:{yyyyMMdd}` Key로 처리하고 TTL은 2일로 둔다.
+- carry over는 `ranking:handled:{yyyyMMdd}`를 수정하지 않는다. handled Set은 Kafka 이벤트 중복 방지 전용이다.
+- 전일 랭킹 Key가 없거나 비어 있으면 점수 적재 없이 done key만 기록한다.
+- carry over 전 Top 1,000 상품을 DB 조회해 삭제/미존재 상품은 제외한다. 삭제/미존재 제외는 정상 처리하고, DB 인프라 예외는 carry over 실패로 처리한다.
+- carry over 실패와 무관하게 `RankingKafkaConsumer`의 실시간 랭킹 적재는 계속한다.
+- carry over 검증은 단위/통합 테스트를 기본 완료 기준으로 삼고, E2E 검증은 선택 확장 항목으로 둔다.
+
 ## 3. 단계별 구현 계획
 
 ### Step 1. Ranking Contract 모듈 작성
@@ -205,7 +214,34 @@
 
 **검증:** `./gradlew :apps:commerce-streamer:test`
 
-### Step 8. E2E 흐름 검증
+### Step 8. Score Carry Over 기반 랭킹 콜드 스타트 완화
+
+**목표:** 자정 직후 오늘 랭킹이 비어 있거나 부족한 문제를 줄이기 위해 전일 Top 1,000 랭킹 점수의 10%를 오늘 랭킹 초기 점수로 적재한다.
+
+1. **Red**
+   - `RankingKeyPolicyTest`에 `ranking:carry-over:done:{yyyyMMdd}` Key 계산 테스트를 추가한다.
+   - `RankingCarryOverJobTest`를 작성한다.
+   - 전일 Top 1,000만 조회하고 `yesterdayScore * 0.1`을 오늘 `ranking:all:{today}`에 합산하는지 검증한다.
+   - carry over 완료 후 오늘 랭킹 ZSET과 done key에 2일 TTL이 설정되는지 검증한다.
+   - done key가 이미 있으면 중복 실행하지 않는지 검증한다.
+   - 00:10 이후 실행 시 skip하는지 검증한다.
+   - 전일 랭킹 Key가 없거나 비어 있으면 점수 적재 없이 done key만 기록하는지 검증한다.
+   - 삭제/미존재 상품은 제외하고, DB 인프라 예외는 실패로 처리하며 done key를 기록하지 않는지 검증한다.
+   - carry over가 `ranking:handled:{today}`를 수정하지 않는지 검증한다.
+   - carry over 실패가 `RankingKafkaConsumer`의 실시간 랭킹 적재 흐름과 결합되지 않는지 검증한다.
+2. **Green**
+   - `RankingKeyPolicy`에 carry over done key 계산을 추가한다.
+   - `RankingRedisRepository`에 Top N 조회, carry over done key 확인/기록 기능을 추가한다.
+   - `RankingCarryOverJob`을 추가해 전일 Top N 조회, 상품 DB 필터링, 점수 이월, TTL 설정, done key 기록을 수행한다.
+   - 스케줄러는 00:10 이전 실행만 허용하고, 이후에는 skip한다.
+3. **Refactor**
+   - Top N, 감쇠율, 허용 cutoff, TTL 상수의 위치를 명확히 정리한다.
+   - `RankingRebuildJob`과 `RankingCarryOverJob`의 책임이 섞이지 않도록 메서드와 패키지명을 정리한다.
+   - E2E 검증은 선택 확장 항목으로 두고, 기본 완료 기준에는 단위/통합 테스트만 포함한다.
+
+**검증:** `./gradlew :modules:ranking-contract:test :apps:commerce-streamer:test`
+
+### Step 9. E2E 흐름 검증
 
 **목표:** 이벤트 발행부터 API 조회까지 전체 흐름이 설계대로 이어지는지 확인한다.
 
@@ -227,7 +263,7 @@
 
 ## 4. 선택적 최적화: Kafka 배치 리스너
 
-> 상태: 보류. Step 1~8의 기본 단건 처리 및 재빌드/E2E 검증이 완료된 뒤 별도 의사결정으로 진행한다.
+> 상태: 보류. Step 1~9의 기본 단건 처리 및 carry over/재빌드/E2E 검증이 완료된 뒤 별도 의사결정으로 진행한다.
 
 기본 단건 `RankingKafkaConsumer` 구현이 검증된 뒤에만 진행한다.
 
@@ -264,6 +300,14 @@
 - [x] 운영 Key 교체 중 실시간 Consumer 충돌 방지는 후속 운영 절차로 명시되어 있다.
 - [x] 이벤트 발행 -> Consumer 처리 -> Redis ZSET 반영 -> API 조회 E2E 테스트가 통과한다.
 
+- [ ] `RankingCarryOverJob`이 전일 Top 1,000 랭킹 점수의 10%를 오늘 랭킹 초기 점수로 적재한다.
+- [ ] carry over 중복 실행이 `ranking:carry-over:done:{yyyyMMdd}` Key로 방지되고 TTL은 2일이다.
+- [ ] carry over는 `ranking:handled:{yyyyMMdd}`를 수정하지 않는다.
+- [ ] carry over는 00:10 이후 실행 시 skip된다.
+- [ ] 전일 랭킹이 없거나 비어 있으면 점수 적재 없이 done key만 기록한다.
+- [ ] carry over 시 삭제/미존재 상품은 제외하고, DB 인프라 예외는 실패로 처리한다.
+- [ ] carry over 실패와 무관하게 `RankingKafkaConsumer`의 실시간 랭킹 적재는 계속된다.
+
 ## 6. 커밋 단위 제안
 
 1. `test: 랭킹 점수 정책 테스트 추가`
@@ -283,3 +327,5 @@
 15. `test: Outbox 기반 랭킹 재빌드 테스트 추가`
 16. `feat: Outbox 기반 랭킹 재빌드 구현`
 17. `test: 랭킹 E2E 흐름 검증 추가`
+18. `test: 랭킹 carry over 테스트 추가`
+19. `feat: 랭킹 carry over 작업 구현`

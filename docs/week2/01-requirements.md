@@ -128,6 +128,15 @@
     *   랭킹 ZSET Key는 `ranking:all:{yyyyMMdd}` 형식을 사용한다.
     *   Redis 멱등성 Set Key는 `ranking:handled:{yyyyMMdd}` 형식을 사용한다.
     *   두 Key 모두 TTL은 2일로 설정한다.
+*   **랭킹 콜드 스타트 완화:** 일자 변경 직후 오늘 랭킹이 비어 있거나 부족한 문제를 줄이기 위해 `RankingCarryOverJob`이 전일 랭킹 일부를 오늘 랭킹 초기 점수로 이월한다.
+    *   매일 00:10 이전에 전일 `ranking:all:{yesterday}` Top 1,000을 읽어 오늘 `ranking:all:{today}`에 `yesterdayScore * 0.1` 점수로 합산한다.
+    *   00:10 이후에는 오늘 실시간 이벤트가 이미 쌓이기 시작했다고 보고 carry over를 skip한다.
+    *   carry over 점수는 오늘 실시간 이벤트 점수와 같은 ZSET에 합산하며, `ranking:handled:{yyyyMMdd}`는 Kafka 이벤트 중복 방지 전용으로 유지한다.
+    *   중복 실행 방지는 `ranking:carry-over:done:{yyyyMMdd}` Key로 처리하고 TTL은 2일로 둔다.
+    *   전일 랭킹 Key가 없거나 비어 있으면 점수 적재 없이 done key만 기록한다.
+    *   carry over 전 Top 1,000 상품을 DB 조회해 삭제/미존재 상품은 제외한다. 삭제/미존재 상품 제외는 정상 처리로 보고, DB 인프라 예외는 carry over 실패로 처리한다.
+    *   carry over 실패는 `RankingKafkaConsumer`의 실시간 랭킹 적재를 막지 않는다.
+    *   `RankingRebuildJob`은 Redis 유실 복구, `RankingCarryOverJob`은 일자 변경 콜드 스타트 완화로 책임을 분리한다.
 *   **점수 계산 정책:** 이벤트 타입별 Weight와 Score를 곱해 ZSET 점수를 누적한다.
     *   조회 이벤트: `0.1 * 1`
     *   좋아요 이벤트: `0.2 * 1`
@@ -292,6 +301,13 @@
 *   Redis 데이터 유실 시 `OUTBOX_EVENTS`의 `PRODUCT_RANKING_EVENT`를 조회해 오늘/전일 랭킹을 재빌드할 수 있다.
 *   `OUTBOX_EVENTS` 조회 시 `INIT`, `COMPLETED` 상태를 포함하고 `FAILED` 상태는 제외한다.
 *   재빌드 후보는 `createdAt` 기준 버퍼 기간으로 조회하되, 실제 랭킹 날짜는 payload의 `occurredAt` 기준으로 계산한다.
+
+*   `RankingCarryOverJob`이 전일 Top 1,000 랭킹 점수의 10%를 오늘 랭킹 초기 점수로 적재한다.
+*   carry over 중복 실행은 `ranking:carry-over:done:{yyyyMMdd}` Key로 방지하고 TTL은 2일이다.
+*   carry over는 `ranking:handled:{yyyyMMdd}`를 수정하지 않으며, Kafka 이벤트 멱등성 정책과 분리된다.
+*   carry over는 00:10 이후 실행 시 skip된다.
+*   carry over 시 삭제/미존재 상품은 제외하고, DB 인프라 예외는 실패로 처리한다.
+*   carry over 실패와 무관하게 `RankingKafkaConsumer`의 실시간 랭킹 적재는 계속된다.
 
 ### 5.2 Ranking API
 *   랭킹 Page 조회 시 정상적으로 랭킹 정보가 반환된다.
