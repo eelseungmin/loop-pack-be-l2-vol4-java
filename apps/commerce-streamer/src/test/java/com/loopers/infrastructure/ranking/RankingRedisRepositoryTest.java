@@ -1,6 +1,7 @@
 package com.loopers.infrastructure.ranking;
 
 import com.loopers.application.ranking.RankingRedisRepository;
+import com.loopers.application.ranking.RankingScoreEntry;
 import com.loopers.testcontainers.RedisTestContainersConfig;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -12,6 +13,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.ContextConfiguration;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -109,5 +111,31 @@ class RankingRedisRepositoryTest {
         assertThat(defaultRedisTemplate.opsForZSet().score("ranking:rebuild:all:20260714", "1")).isNull();
         assertThat(defaultRedisTemplate.opsForZSet().score("ranking:rebuild:all:20260713", "1")).isNull();
         assertThat(defaultRedisTemplate.opsForZSet().score("ranking:rebuild:all:20260712", "1")).isEqualTo(10.0);
+    }
+
+    @Test
+    @DisplayName("전일 랭킹 Top N을 조회하고 carry over 점수를 오늘 랭킹에 누적하며 done key에 2일 TTL을 설정한다.")
+    void carryOverRanking_ShouldReadTopRankingsAndMarkDone() {
+        // given
+        defaultRedisTemplate.opsForZSet().add("ranking:all:20260713", "1", 30.0);
+        defaultRedisTemplate.opsForZSet().add("ranking:all:20260713", "2", 20.0);
+        defaultRedisTemplate.opsForZSet().add("ranking:all:20260713", "3", 10.0);
+
+        // when
+        List<RankingScoreEntry> topRankings = rankingRedisRepository.findTopRankings("20260713", 2);
+        rankingRedisRepository.incrementCarryOverScore("20260714", 1L, 3.0);
+        rankingRedisRepository.markCarryOverDone("20260714");
+
+        // then
+        assertThat(topRankings)
+            .extracting(RankingScoreEntry::productId, RankingScoreEntry::score)
+            .containsExactly(
+                org.assertj.core.groups.Tuple.tuple(1L, 30.0),
+                org.assertj.core.groups.Tuple.tuple(2L, 20.0)
+            );
+        assertThat(defaultRedisTemplate.opsForZSet().score("ranking:all:20260714", "1")).isEqualTo(3.0);
+        assertThat(defaultRedisTemplate.getExpire("ranking:all:20260714", TimeUnit.SECONDS)).isBetween(172700L, 172800L);
+        assertThat(rankingRedisRepository.isCarryOverDone("20260714")).isTrue();
+        assertThat(defaultRedisTemplate.getExpire("ranking:carry-over:done:20260714", TimeUnit.SECONDS)).isBetween(172700L, 172800L);
     }
 }

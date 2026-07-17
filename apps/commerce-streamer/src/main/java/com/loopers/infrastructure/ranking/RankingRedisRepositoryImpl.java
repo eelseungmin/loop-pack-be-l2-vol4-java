@@ -1,12 +1,16 @@
 package com.loopers.infrastructure.ranking;
 
 import com.loopers.application.ranking.RankingRedisRepository;
+import com.loopers.application.ranking.RankingScoreEntry;
 import com.loopers.domain.ranking.RankingKeyPolicy;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Set;
 
 @Component
 public class RankingRedisRepositoryImpl implements RankingRedisRepository {
@@ -77,5 +81,39 @@ public class RankingRedisRepositoryImpl implements RankingRedisRepository {
             defaultRedisTemplate.rename(rebuildKey, rankingKey);
             defaultRedisTemplate.expire(rankingKey, RANKING_TTL);
         }
+    }
+
+    @Override
+    public List<RankingScoreEntry> findTopRankings(String dateKey, int limit) {
+        if (limit <= 0) {
+            return List.of();
+        }
+
+        Set<ZSetOperations.TypedTuple<String>> rankings = defaultRedisTemplate.opsForZSet()
+            .reverseRangeWithScores(rankingKeyPolicy.rankingKey(dateKey), 0, limit - 1L);
+        if (rankings == null || rankings.isEmpty()) {
+            return List.of();
+        }
+
+        return rankings.stream()
+            .map(tuple -> new RankingScoreEntry(Long.valueOf(tuple.getValue()), tuple.getScore()))
+            .toList();
+    }
+
+    @Override
+    public void incrementCarryOverScore(String dateKey, Long productId, double score) {
+        String rankingKey = rankingKeyPolicy.rankingKey(dateKey);
+        defaultRedisTemplate.opsForZSet().incrementScore(rankingKey, String.valueOf(productId), score);
+        defaultRedisTemplate.expire(rankingKey, RANKING_TTL);
+    }
+
+    @Override
+    public boolean isCarryOverDone(String dateKey) {
+        return Boolean.TRUE.equals(defaultRedisTemplate.hasKey(rankingKeyPolicy.carryOverDoneKey(dateKey)));
+    }
+
+    @Override
+    public void markCarryOverDone(String dateKey) {
+        defaultRedisTemplate.opsForValue().set(rankingKeyPolicy.carryOverDoneKey(dateKey), "1", RANKING_TTL);
     }
 }
