@@ -117,6 +117,73 @@ class RankingE2ETest {
         assertThat(ranking.get("brandName").asText()).isEqualTo("Nike");
     }
 
+    @DisplayName("일자가 변경되어도 이전 날짜 랭킹을 조회할 수 있다")
+    @Test
+    void rankingApi_ShouldServePreviousDateRanking() throws Exception {
+        Long brandId = postForData("/api-admin/v1/brands", Map.of("name", "Previous Brand")).asLong();
+        Long productId = postForData(
+            "/api-admin/v1/products",
+            Map.of(
+                "brandId", brandId,
+                "name", "Previous Product",
+                "price", BigDecimal.valueOf(10_000),
+                "initialStock", 10
+            )
+        ).asLong();
+
+        publishRankingEvent(
+            "e2e-ranking-yesterday-event",
+            "ORDER",
+            productId,
+            BigDecimal.valueOf(10_000),
+            1,
+            LocalDateTime.of(2026, 7, 13, 23, 59)
+        );
+
+        JsonNode ranking = pollRanking(productId, "20260713");
+
+        assertThat(ranking.get("rank").asLong()).isEqualTo(1L);
+        assertThat(ranking.get("productId").asLong()).isEqualTo(productId);
+        assertThat(ranking.get("productName").asText()).isEqualTo("Previous Product");
+    }
+
+    @DisplayName("주문 1건의 가중치가 좋아요 3건보다 높게 랭킹 순서에 반영된다")
+    @Test
+    void rankingApi_ShouldOrderByWeightedScore() throws Exception {
+        Long brandId = postForData("/api-admin/v1/brands", Map.of("name", "Weight Brand")).asLong();
+        Long orderedProductId = postForData(
+            "/api-admin/v1/products",
+            Map.of(
+                "brandId", brandId,
+                "name", "Ordered Product",
+                "price", BigDecimal.valueOf(10_000),
+                "initialStock", 10
+            )
+        ).asLong();
+        Long likedProductId = postForData(
+            "/api-admin/v1/products",
+            Map.of(
+                "brandId", brandId,
+                "name", "Liked Product",
+                "price", BigDecimal.valueOf(1_000),
+                "initialStock", 10
+            )
+        ).asLong();
+
+        publishRankingEvent("e2e-ranking-order-weight", "ORDER", orderedProductId, BigDecimal.valueOf(10_000), 1, LocalDateTime.of(2026, 7, 15, 10, 0));
+        publishRankingEvent("e2e-ranking-like-weight-1", "LIKE", likedProductId, BigDecimal.ZERO, 0, LocalDateTime.of(2026, 7, 15, 10, 1));
+        publishRankingEvent("e2e-ranking-like-weight-2", "LIKE", likedProductId, BigDecimal.ZERO, 0, LocalDateTime.of(2026, 7, 15, 10, 2));
+        publishRankingEvent("e2e-ranking-like-weight-3", "LIKE", likedProductId, BigDecimal.ZERO, 0, LocalDateTime.of(2026, 7, 15, 10, 3));
+
+        JsonNode orderedProductRanking = pollRanking(orderedProductId, "20260715");
+        JsonNode likedProductRanking = pollRanking(likedProductId, "20260715");
+
+        assertThat(orderedProductRanking.get("rank").asLong())
+            .isLessThan(likedProductRanking.get("rank").asLong());
+        assertThat(orderedProductRanking.get("score").asDouble())
+            .isGreaterThan(likedProductRanking.get("score").asDouble());
+    }
+
     private static JsonNode postForData(String path, Map<String, ?> body) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
             .uri(URI.create("http://localhost:" + API_PORT + path))
@@ -133,14 +200,25 @@ class RankingE2ETest {
     }
 
     private static void publishRankingEvent(Long productId, BigDecimal price, int amount, LocalDateTime occurredAt) throws Exception {
+        publishRankingEvent("e2e-ranking-event-1", "ORDER", productId, price, amount, occurredAt);
+    }
+
+    private static void publishRankingEvent(
+        String eventId,
+        String rankingEventType,
+        Long productId,
+        BigDecimal price,
+        int amount,
+        LocalDateTime occurredAt
+    ) throws Exception {
         Properties properties = new Properties();
         properties.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
         properties.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
         properties.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
 
         Map<String, Object> payload = Map.of(
-            "eventId", "e2e-ranking-event-1",
-            "rankingEventType", "ORDER",
+            "eventId", eventId,
+            "rankingEventType", rankingEventType,
             "productId", productId,
             "price", price,
             "amount", amount,
@@ -153,13 +231,17 @@ class RankingE2ETest {
     }
 
     private static JsonNode pollRanking(Long productId) throws Exception {
+        return pollRanking(productId, "20260714");
+    }
+
+    private static JsonNode pollRanking(Long productId, String dateKey) throws Exception {
         Exception lastError = null;
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
 
         while (System.nanoTime() < deadline) {
             try {
                 HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create("http://localhost:" + API_PORT + "/api/v1/rankings?date=20260714&page=1&size=20"))
+                    .uri(URI.create("http://localhost:" + API_PORT + "/api/v1/rankings?date=" + dateKey + "&page=1&size=20"))
                     .timeout(Duration.ofSeconds(5))
                     .GET()
                     .build();
