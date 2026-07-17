@@ -11,6 +11,7 @@ public class RankingKeyPolicy {
     private static final String RANKING_KEY_PREFIX = "ranking:all:";
     private static final String REBUILD_RANKING_KEY_PREFIX = "ranking:rebuild:all:";
     private static final String HANDLED_KEY_PREFIX = "ranking:handled:";
+    private static final String CARRY_OVER_DONE_KEY_PREFIX = "ranking:carry-over:done:";
     private static final DateTimeFormatter DATE_KEY_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
 
     public String dateKey(LocalDateTime occurredAt) {
@@ -27,5 +28,9 @@ public class RankingKeyPolicy {
 
     public String handledKey(String dateKey) {
         return HANDLED_KEY_PREFIX + dateKey;
+    }
+
+    public String carryOverDoneKey(String dateKey) {
+        return CARRY_OVER_DONE_KEY_PREFIX + dateKey;
     }
 }

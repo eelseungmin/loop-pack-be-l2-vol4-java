@@ -68,5 +68,6 @@ class RankingContractTest {
         assertThat(rankingKeyPolicy.rankingKey(dateKey)).isEqualTo("ranking:all:20260714");
         assertThat(rankingKeyPolicy.handledKey(dateKey)).isEqualTo("ranking:handled:20260714");
         assertThat(rankingKeyPolicy.rebuildRankingKey(dateKey)).isEqualTo("ranking:rebuild:all:20260714");
+        assertThat(rankingKeyPolicy.carryOverDoneKey(dateKey)).isEqualTo("ranking:carry-over:done:20260714");
     }
 }
