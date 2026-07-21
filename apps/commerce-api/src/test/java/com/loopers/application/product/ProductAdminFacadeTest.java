@@ -1,7 +1,11 @@
 package com.loopers.application.product;
 
 import com.loopers.application.brand.BrandRepository;
+import com.loopers.application.outbox.OutboxEventRepository;
 import com.loopers.domain.brand.BrandModel;
+import com.loopers.domain.outbox.EventType;
+import com.loopers.domain.outbox.OutboxEvent;
+import com.loopers.domain.outbox.OutboxEventStatus;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.support.error.CoreException;
 import org.junit.jupiter.api.DisplayName;
@@ -19,6 +23,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.BDDMockito.given;
+import static org.mockito.ArgumentCaptor.forClass;
+import org.mockito.ArgumentCaptor;
 import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
@@ -35,6 +41,9 @@ class ProductAdminFacadeTest {
 
     @Mock
     private org.springframework.data.redis.core.RedisTemplate<String, String> defaultRedisTemplate;
+
+    @Mock
+    private OutboxEventRepository outboxEventRepository;
 
     @Test
     @DisplayName("상품 등록 요청 시 브랜드가 존재하면 상품과 재고가 생성 및 저장된다.")
@@ -99,5 +108,30 @@ class ProductAdminFacadeTest {
         // then
         assertThat(product.isDeleted()).isTrue();
         verify(productRepository).save(product);
+    }
+
+    @Test
+    @DisplayName("상품을 삭제하면 PRODUCT_RANKING_EVENT Outbox 이벤트가 저장된다.")
+    void deleteProduct_ShouldSaveProductDeletedOutboxEvent() {
+        // given
+        Long productId = 10L;
+        ProductModel product = new ProductModel(1L, "Air Jordan", new BigDecimal("200000"));
+        ReflectionTestUtils.setField(product, "id", productId);
+
+        given(productRepository.findById(productId)).willReturn(Optional.of(product));
+
+        // when
+        productAdminFacade.deleteProduct(productId);
+
+        // then
+        ArgumentCaptor<OutboxEvent> captor = forClass(OutboxEvent.class);
+        verify(outboxEventRepository).save(captor.capture());
+        OutboxEvent outboxEvent = captor.getValue();
+        assertThat(outboxEvent.getEventType()).isEqualTo(EventType.PRODUCT_RANKING_EVENT);
+        assertThat(outboxEvent.getStatus()).isEqualTo(OutboxEventStatus.INIT);
+        assertThat(outboxEvent.getPayload()).contains("\"rankingEventType\":\"PRODUCT_DELETED\"");
+        assertThat(outboxEvent.getPayload()).contains("\"productId\":10");
+        assertThat(outboxEvent.getPayload()).contains("\"occurredAt\"");
+        assertThat(outboxEvent.getPayload()).doesNotContain("\"eventId\"");
     }
 }

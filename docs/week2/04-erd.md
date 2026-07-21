@@ -104,9 +104,9 @@ erDiagram
         bigint id PK
         varchar aggregate_type "PRODUCT_LIKE, ORDER 등"
         bigint aggregate_id
-        varchar event_type "LIKE_CREATED, ORDER_COMPLETED 등"
-        text payload "JSON 이벤트 데이터"
-        varchar status "INIT, PUBLISHED"
+        varchar event_type "PRODUCT_RANKING_EVENT, LIKE_CREATED 등"
+        text payload "JSON 이벤트 데이터. PRODUCT_RANKING_EVENT raw payload에는 eventId를 저장하지 않음"
+        varchar status "INIT, COMPLETED, FAILED"
         datetime created_at
         datetime updated_at
     }

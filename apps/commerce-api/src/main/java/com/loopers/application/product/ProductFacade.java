@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.loopers.domain.brand.BrandModel;
 import com.loopers.application.brand.BrandRepository;
 import com.loopers.domain.event.EventPublisher;
+import com.loopers.application.ranking.ProductRankingInfo;
+import com.loopers.application.ranking.RankingRedisRepository;
 import com.loopers.domain.user.UserActionLevel;
 import com.loopers.domain.user.UserActionLogEvent;
 import com.loopers.domain.product.ProductModel;
@@ -21,6 +23,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
@@ -28,11 +32,14 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 @Component
 public class ProductFacade {
+    private static final DateTimeFormatter RANKING_DATE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd");
+
     private final ProductRepository productRepository;
     private final BrandRepository brandRepository;
     private final RedisTemplate<String, String> defaultRedisTemplate;
     private final ObjectMapper objectMapper;
     private final EventPublisher eventPublisher;
+    private final RankingRedisRepository rankingRedisRepository;
 
     @Transactional(readOnly = true)
     public ProductInfo getProduct(Long id) {
@@ -41,7 +48,8 @@ public class ProductFacade {
             String cachedJson = defaultRedisTemplate.opsForValue().get(cacheKey);
             if (cachedJson != null) {
                 eventPublisher.publish(new UserActionLogEvent(null, "VIEW_PRODUCT", "{\"productId\":" + id + "}", UserActionLevel.LOW));
-                return objectMapper.readValue(cachedJson, ProductInfo.class);
+                ProductInfo cachedProductInfo = objectMapper.readValue(cachedJson, ProductInfo.class);
+                return cachedProductInfo.withRanking(findTodayRanking(id));
             }
         } catch (Exception e) {
             log.error("Redis read error for key: {}, falling back to DB", cacheKey, e);
@@ -62,7 +70,12 @@ public class ProductFacade {
         }
 
         eventPublisher.publish(new UserActionLogEvent(null, "VIEW_PRODUCT", "{\"productId\":" + id + "}", UserActionLevel.LOW));
-        return productInfo;
+        return productInfo.withRanking(findTodayRanking(id));
+    }
+
+    private ProductRankingInfo findTodayRanking(Long productId) {
+        String todayKey = LocalDate.now().format(RANKING_DATE_FORMATTER);
+        return rankingRedisRepository.findProductRanking(todayKey, productId).orElse(null);
     }
 
     @Transactional(readOnly = true)

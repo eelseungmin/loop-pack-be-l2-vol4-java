@@ -121,7 +121,42 @@
     *   `event_handled` 테이블을 도입하여 메시지의 고유 식별자(새로운 UUID 생성 없이 `OUTBOX_EVENTS`의 `bigint id`를 그대로 재사용)를 단건 저장해 중복을 필터링한다. (단, 데이터가 무한히 쌓이는 것을 방지하기 위해 주기적 삭제 배치가 필요하다.)
     *   파티션 키로 순서가 보장되며, 멱등성 테이블로 중복 수신이 방어되므로 `PRODUCT_METRICS`는 단순 증감(Delta) 처리를 수행하여 누락 없는 총합을 유지한다.
 
-### 2.12 글로벌 대기열 (Queue) 정책
+### 2.12 실시간 상품 랭킹 정책
+*   **목적:** 기존 `product_metrics` 누적 집계를 응용하여, 조회/좋아요/주문 이벤트 기반의 **오늘의 인기상품** 랭킹을 빠르게 제공한다. `PRODUCT_METRICS`는 영속 누적 통계의 기준 데이터로 유지하고, Redis ZSET은 일간 랭킹 조회를 위한 파생 Read Model로 사용한다.
+*   **이벤트 날짜 기준:** 랭킹 일자는 Consumer 처리 시각이 아니라 **이벤트 발생 시각**을 기준으로 계산한다. 지연 소비가 발생하더라도 실제 7월 14일에 발생한 이벤트는 `ranking:all:20260714`에 반영한다.
+*   **Redis Key 전략 및 TTL:**
+    *   랭킹 ZSET Key는 `ranking:all:{yyyyMMdd}` 형식을 사용한다.
+    *   Redis 멱등성 Set Key는 `ranking:handled:{yyyyMMdd}` 형식을 사용한다.
+    *   두 Key 모두 TTL은 2일로 설정한다.
+*   **랭킹 콜드 스타트 완화:** 일자 변경 직후 오늘 랭킹이 비어 있거나 부족한 문제를 줄이기 위해 `RankingCarryOverJob`이 전일 랭킹 일부를 오늘 랭킹 초기 점수로 이월한다.
+    *   매일 00:10 이전에 전일 `ranking:all:{yesterday}` Top 1,000을 읽어 오늘 `ranking:all:{today}`에 `yesterdayScore * 0.1` 점수로 합산한다.
+    *   00:10 이후에는 오늘 실시간 이벤트가 이미 쌓이기 시작했다고 보고 carry over를 skip한다.
+    *   carry over 점수는 오늘 실시간 이벤트 점수와 같은 ZSET에 합산하며, `ranking:handled:{yyyyMMdd}`는 Kafka 이벤트 중복 방지 전용으로 유지한다.
+    *   중복 실행 방지는 `ranking:carry-over:done:{yyyyMMdd}` Key로 처리하고 TTL은 2일로 둔다.
+    *   전일 랭킹 Key가 없거나 비어 있으면 점수 적재 없이 done key만 기록한다.
+    *   carry over 전 Top 1,000 상품을 DB 조회해 삭제/미존재 상품은 제외한다. 삭제/미존재 상품 제외는 정상 처리로 보고, DB 인프라 예외는 carry over 실패로 처리한다.
+    *   carry over 실패는 `RankingKafkaConsumer`의 실시간 랭킹 적재를 막지 않는다.
+    *   `RankingRebuildJob`은 Redis 유실 복구, `RankingCarryOverJob`은 일자 변경 콜드 스타트 완화로 책임을 분리한다.
+*   **점수 계산 정책:** 이벤트 타입별 Weight와 Score를 곱해 ZSET 점수를 누적한다.
+    *   조회 이벤트: `0.1 * 1`
+    *   좋아요 이벤트: `0.2 * 1`
+    *   주문 이벤트: `0.6 * log(price * amount + 1)`
+    *   주문 점수는 주문 금액의 영향은 반영하되, 고가 상품 1건이 랭킹을 과도하게 지배하지 않도록 로그 정규화를 적용한다.
+*   **Consumer 처리 책임:** `MetricsKafkaConsumer`와 `RankingKafkaConsumer`를 분리한다. 두 Consumer는 같은 상품 이벤트 토픽을 서로 다른 Consumer Group으로 독립 소비한다. `MetricsKafkaConsumer`는 `product_metrics` 누적 집계만 담당하고, `RankingKafkaConsumer`는 Redis 랭킹 Read Model 갱신만 담당한다.
+*   **독립 Projection 및 최종 일관성:** `PRODUCT_METRICS`와 Redis 랭킹은 서로 다른 목적의 Projection이다. 한쪽 Consumer의 지연이나 장애가 다른 쪽 처리를 막지 않으며, 두 Projection은 Consumer 재시도를 통해 최종적으로 수렴한다.
+*   **공통 계약 모듈 분리:** 랭킹 관련 비즈니스 계약과 이벤트 로그 조회 계약은 기술 모듈에 두지 않는다.
+    *   `modules/ranking-contract`: `ProductRankingEvent`, `RankingEventType`, `RankingScorePolicy`, `RankingKeyPolicy`를 제공한다. `commerce-api`와 `commerce-streamer`는 같은 랭킹 Key/date/score 정책을 사용한다.
+    *   `modules/event-contract`: `OutboxEventLog` 읽기 전용 계약을 제공한다. `OutboxEventLog`는 `id`, `eventType`, `status`, `payload`, `createdAt`을 가진다. JPA Entity는 공용화하지 않고 각 애플리케이션의 인프라 구현에 둔다.
+*   **Ranking Consumer Ack 정책:** `RankingKafkaConsumer`는 Redis 반영에 성공한 뒤에만 Kafka offset을 커밋한다. Redis 장애 중에는 Ranking Consumer lag이 쌓일 수 있으나, Redis 복구 후 미처리 이벤트를 재소비해 랭킹을 따라잡는다.
+*   **Redis 멱등성:** Kafka 재처리로 인한 `ZINCRBY` 중복 가산을 막기 위해, 조회/좋아요/주문 이벤트는 `ranking:handled:{yyyyMMdd}` Set에 `eventId`를 먼저 저장한다. 최초 저장에 성공한 이벤트에 대해서만 `ranking:all:{yyyyMMdd}`에 점수를 누적한다. 상품 삭제 이벤트는 `ZREM` 자체가 멱등적이므로 별도 Redis handled Set을 사용하지 않는다.
+*   **랭킹 표준 이벤트:** Outbox에는 랭킹 표준 이벤트를 `PRODUCT_RANKING_EVENT` 단일 `event_type`으로 기록한다. 실제 행위는 payload 내부 `rankingEventType`(`VIEW`, `LIKE`, `ORDER`, `PRODUCT_DELETED`)으로 구분한다. DB에 저장되는 raw payload에는 `eventId`를 넣지 않고, Kafka Relay 또는 재빌드 조회 구현이 `OUTBOX_EVENTS.id`를 `ProductRankingEvent.eventId`로 주입한다.
+*   **Kafka 배치 리스너 (선택적 최적화):** 기본 설계는 단건 이벤트 처리로 검증한다. 트래픽 증가로 ZSET/DB 연산이 과도해질 경우 배치 리스너를 적용해 `(date, productId)` 단위로 점수를 합산한 뒤 Redis Pipeline 및 DB Batch Update로 처리량을 높인다.
+*   **Ranking API 조회:** `GET /api/v1/rankings?date=yyyyMMdd&size=20&page=1` 호출 시 Redis ZSET에서 상품 ID와 점수를 읽고, 상품 Repository로 상품/브랜드 정보를 조회해 랭킹 응답을 조합한다. 페이징 정책은 기존 프로젝트 API 정책을 따른다.
+*   **삭제 상품 처리:** 상품이 논리 삭제되면 상품 삭제 트랜잭션 안에서 `PRODUCT_RANKING_EVENT` Outbox 이벤트를 기록하고, payload의 `rankingEventType`은 `PRODUCT_DELETED`로 둔다. 기존 Outbox Relay가 Kafka 발행 시 `OUTBOX_EVENTS.id`를 `eventId`로 주입하고, `RankingKafkaConsumer`는 이 이벤트를 소비해 최근 TTL 범위의 랭킹 ZSET에서 해당 `productId`를 제거한다. 현재 TTL이 2일이므로 삭제 시점 기준 오늘/전일 Key(`ranking:all:{yyyyMMdd}`)에서 `ZREM`을 수행한다. API 조회 시에는 삭제 이벤트 처리 지연 등으로 ZSET에 남아 있는 삭제 상품을 2차 방어로 제외한다.
+*   **Redis 유실 복구:** Redis 데이터가 유실된 경우, `commerce-streamer`의 `RankingRebuildEventRepository` 구현이 `OUTBOX_EVENTS`에서 `PRODUCT_RANKING_EVENT`를 조회해 `ProductRankingEvent`로 변환한다. 조회 대상 상태는 `INIT`, `COMPLETED`이며 `FAILED`는 제외한다. 후보 조회는 `createdAt` 기준 최근 3일 버퍼를 두고, 실제 랭킹 반영 여부는 payload 내부 `occurredAt`이 오늘/전일인지로 판단한다. 재빌드 Job은 조회한 이벤트를 `ranking:rebuild:all:{yyyyMMdd}` 임시 Key에 재계산한 뒤 운영 Key(`ranking:all:{yyyyMMdd}`)로 교체한다. 운영 Key 교체 중 `RankingKafkaConsumer`와의 충돌 방지는 후속 운영 절차로 남기며, Consumer 일시 중단 또는 기준 시각 이후 이벤트 replay 중 하나를 선택해야 한다.
+*   **상품 상세 랭킹 포함:** `GET /api/v1/products/{productId}` 응답에는 서버의 오늘 날짜 기준 랭킹 정보를 함께 반환한다. 해당 상품이 오늘 랭킹에 없으면 랭킹 정보는 `null`로 반환한다.
+
+### 2.13 글로벌 대기열 (Queue) 정책
 *   **목적:** 이벤트 등 대규모 트래픽 발생 시, 백엔드 서버(DB 포함)를 보호하고 사용자에게 명확한 대기 상태를 안내하기 위해 인바운드 트래픽을 제어한다.
 *   **적용 범위 (Global Scope):** 시스템 전반에 걸쳐 단일 글로벌 대기열을 운용한다. 특정 상품뿐만 아니라 이벤트 기간의 접속 자체를 통제하여 시스템 전체의 안정성을 확보한다.
 *   **상태 분리 및 스케줄러 전환 (Waiting / Active):**
@@ -168,6 +203,10 @@
         *   `likes_desc` 정렬 시, 좋아요 개수가 동일한 상품은 최신 등록 순(`latest`)으로 2차 정렬한다.
     *   `page`, `size`: 페이징 지원 (기본 0, 20)
 
+*   **상품 상세 응답 확장:**
+    *   상품 상세 조회 응답에는 오늘 날짜 기준 랭킹 정보(`rank`, `score`, `date`)를 포함한다.
+    *   해당 상품이 오늘 랭킹에 없으면 랭킹 정보는 `null`로 반환한다.
+
 #### 어드민 기능
 | METHOD | URI | ldap_required | 설명 |
 | --- | --- | --- | --- |
@@ -180,14 +219,27 @@
 | PUT | `/api-admin/v1/products/{productId}` | O | 상품 정보 수정 (브랜드 변경 불가) |
 | DELETE | `/api-admin/v1/products/{productId}` | O | 상품 삭제 (논리 삭제) |
 
-### 3.3 좋아요 (Likes)
+### 3.3 랭킹 (Rankings)
+| METHOD | URI | user_required | 설명 |
+| --- | --- | --- | --- |
+| GET | `/api/v1/rankings?date=yyyyMMdd&size=20&page=1` | X | 일자별 인기상품 랭킹 페이지 조회 |
+
+*   **랭킹 조회 파라미터:**
+    *   `date`: 조회할 랭킹 일자 (`yyyyMMdd`). 미입력 시 서버의 오늘 날짜를 사용한다.
+    *   `page`, `size`: 기존 프로젝트 페이징 정책을 따른다.
+*   **응답 정책:**
+    *   Redis ZSET의 member는 `productId`, score는 가중치가 반영된 누적 점수이다.
+    *   응답은 단순 상품 ID 목록이 아니라 상품명, 가격, 브랜드명, 랭킹 순위, 랭킹 점수를 함께 제공한다.
+    *   논리 삭제된 상품은 상품 삭제 시 Redis ZSET에서 제거한다. 조회 시점에 남아 있는 삭제 상품은 2차 방어로 제외한다.
+
+### 3.4 좋아요 (Likes)
 | METHOD | URI | user_required | 설명 |
 | --- | --- | --- | --- |
 | POST | `/api/v1/products/{productId}/likes` | O | 상품 좋아요 등록 (중복 요청 시 성공 반환) |
 | DELETE | `/api/v1/products/{productId}/likes` | O | 상품 좋아요 취소 |
 | GET | `/api/v1/users/me/likes` | O | 내가 좋아요 한 상품 목록 조회 (삭제된 상품 제외) |
 
-### 3.4 주문 (Orders)
+### 3.5 주문 (Orders)
 #### 고객용 기능
 | METHOD | URI | user_required | 설명 |
 | --- | --- | --- | --- |
@@ -203,7 +255,7 @@
 | GET | `/api-admin/v1/orders` | O | 전체 주문 목록 조회 |
 | GET | `/api-admin/v1/orders/{orderId}` | O | 단일 주문 상세 조회 |
 
-### 3.5 쿠폰 (Coupons)
+### 3.6 쿠폰 (Coupons)
 #### 고객용 기능
 | METHOD | URI | user_required | 설명 |
 | --- | --- | --- | --- |
@@ -220,7 +272,7 @@
 | PUT | `/api-admin/v1/coupons/{couponId}` | O | 쿠폰 템플릿 수정 |
 | DELETE | `/api-admin/v1/coupons/{couponId}` | O | 쿠폰 템플릿 삭제 |
 | GET | `/api-admin/v1/coupons/{couponId}/issues?page=0&size=20` | O | 특정 쿠폰의 발급 내역 조회 |
-### 3.6 대기열 (Queue)
+### 3.7 대기열 (Queue)
 | METHOD | URI | user_required | 설명 |
 | --- | --- | --- | --- |
 | POST | `/api/v1/queue/enter` | O | 대기열 진입 요청 (이미 진입한 경우 기존 정보 반환) |
@@ -233,3 +285,40 @@
 - **예외 처리 규칙:** 비즈니스 예외는 모두 `CoreException(ErrorType, customMessage?)`로 통일한다. HTTP 상태/에러 코드는 `ErrorType` enum에서 통합 관리하여 응답한다. 새로운 예외가 필요한 경우 enum 내에서 정의하여 사용한다.
 - **확장성 (DIP):** 외부 결제사 연동 등 인프라스트럭처 확장에 대처할 수 있도록 결제 처리는 `PaymentGateway` 인터페이스에 의존하며, 테스트 및 로컬 환경을 위해 가짜 승인을 처리하는 `MockPaymentGateway`를 제공한다.
 - **삭제 정책:** 모든 삭제는 `Logical Delete`를 원칙으로 하여 주문 이력과의 참조 무결성을 유지한다.
+
+---
+
+## 5. 설계 검증 체크리스트
+### 5.1 Ranking Consumer
+*   랭킹 ZSET의 TTL, 키 전략이 `ranking:all:{yyyyMMdd}`, 2일 TTL로 구성되어 있다.
+*   Redis 멱등성 Set의 TTL, 키 전략이 `ranking:handled:{yyyyMMdd}`, 2일 TTL로 구성되어 있다.
+*   이벤트 발생 시각 기준으로 날짜별 적재 Key를 계산한다.
+*   이벤트 발생 후 조회/좋아요/주문 Weight가 Redis ZSET 점수에 반영된다.
+*   주문 이벤트 점수는 `0.6 * log(price * amount + 1)`로 계산된다.
+*   동일 `eventId`가 재처리되어도 Redis ZSET 점수가 중복 가산되지 않는다.
+*   `MetricsKafkaConsumer`와 `RankingKafkaConsumer`는 서로 다른 Consumer Group으로 독립 소비한다.
+*   `RankingKafkaConsumer`는 Redis 반영 성공 후 Kafka offset을 커밋한다.
+*   Redis 데이터 유실 시 `OUTBOX_EVENTS`의 `PRODUCT_RANKING_EVENT`를 조회해 오늘/전일 랭킹을 재빌드할 수 있다.
+*   `OUTBOX_EVENTS` 조회 시 `INIT`, `COMPLETED` 상태를 포함하고 `FAILED` 상태는 제외한다.
+*   재빌드 후보는 `createdAt` 기준 버퍼 기간으로 조회하되, 실제 랭킹 날짜는 payload의 `occurredAt` 기준으로 계산한다.
+
+*   `RankingCarryOverJob`이 전일 Top 1,000 랭킹 점수의 10%를 오늘 랭킹 초기 점수로 적재한다.
+*   carry over 중복 실행은 `ranking:carry-over:done:{yyyyMMdd}` Key로 방지하고 TTL은 2일이다.
+*   carry over는 `ranking:handled:{yyyyMMdd}`를 수정하지 않으며, Kafka 이벤트 멱등성 정책과 분리된다.
+*   carry over는 00:10 이후 실행 시 skip된다.
+*   carry over 시 삭제/미존재 상품은 제외하고, DB 인프라 예외는 실패로 처리한다.
+*   carry over 실패와 무관하게 `RankingKafkaConsumer`의 실시간 랭킹 적재는 계속된다.
+
+### 5.2 Ranking API
+*   랭킹 Page 조회 시 정상적으로 랭킹 정보가 반환된다.
+*   랭킹 Page 조회 시 단순 상품 ID가 아닌 상품 정보가 Aggregation 되어 제공된다.
+*   상품 논리 삭제 시 최근 TTL 범위의 랭킹 ZSET에서 해당 상품이 제거된다.
+*   삭제 이벤트 처리 지연 등으로 ZSET에 남아 있는 삭제 상품은 API 응답에서 제외된다.
+*   상품 상세 조회 시 오늘 기준 해당 상품의 순위가 함께 반환된다.
+*   상품이 오늘 랭킹에 없다면 상품 상세 응답의 랭킹 정보는 `null`이다.
+
+### 5.3 E2E 검증
+*   이벤트 발행 -> Kafka Consumer 수신 -> `PRODUCT_METRICS` 갱신 -> Redis ZSET 점수 반영 -> API 조회 흐름이 정상 동작한다.
+*   일자가 변경되어도 이전 날짜의 랭킹 조회가 TTL 내에서 정상 동작한다.
+*   가중치 적용이 의도대로 랭킹 순서에 반영된다.
+*   Kafka 배치 리스너 적용 시에도 단건 처리와 동일한 점수 결과가 나온다.

@@ -1,6 +1,10 @@
 package com.loopers.infrastructure.outbox;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.loopers.application.outbox.OutboxEventRepository;
+import com.loopers.domain.outbox.EventType;
+import com.loopers.domain.outbox.OutboxEvent;
 import com.loopers.domain.outbox.OutboxEventCreatedEvent;
 import com.loopers.domain.outbox.OutboxEventStatus;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +22,7 @@ public class OutboxKafkaRelayListener {
 
     private final OutboxEventRepository outboxEventRepository;
     private final KafkaTemplate<Object, Object> kafkaTemplate;
+    private final ObjectMapper objectMapper;
 
     @Async
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -29,9 +34,9 @@ public class OutboxKafkaRelayListener {
                 return;
             }
 
-            String topic = outboxEvent.getEventType().name();
+            String topic = topicOf(outboxEvent);
             String key = outboxEvent.getId().toString();
-            String payload = outboxEvent.getPayload();
+            String payload = payloadOf(outboxEvent);
 
             kafkaTemplate.send(topic, key, payload)
                     .whenComplete((result, ex) -> {
@@ -46,5 +51,26 @@ public class OutboxKafkaRelayListener {
                         }
                     });
         });
+    }
+
+    private String topicOf(OutboxEvent outboxEvent) {
+        if (outboxEvent.getEventType() == EventType.PRODUCT_RANKING_EVENT) {
+            return "product-events";
+        }
+        return outboxEvent.getEventType().name();
+    }
+
+    private String payloadOf(OutboxEvent outboxEvent) {
+        if (outboxEvent.getEventType() != EventType.PRODUCT_RANKING_EVENT) {
+            return outboxEvent.getPayload();
+        }
+
+        try {
+            ObjectNode payload = (ObjectNode) objectMapper.readTree(outboxEvent.getPayload());
+            payload.put("eventId", outboxEvent.getId().toString());
+            return objectMapper.writeValueAsString(payload);
+        } catch (Exception e) {
+            throw new IllegalArgumentException("Failed to inject ranking event id.", e);
+        }
     }
 }

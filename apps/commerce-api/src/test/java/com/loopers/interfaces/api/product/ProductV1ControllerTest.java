@@ -2,15 +2,16 @@ package com.loopers.interfaces.api.product;
 
 import com.loopers.application.product.ProductFacade;
 import com.loopers.application.product.ProductInfo;
+import com.loopers.application.ranking.ProductRankingInfo;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
-import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.MediaType;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 
 import java.math.BigDecimal;
@@ -30,7 +31,7 @@ class ProductV1ControllerTest {
     @Autowired
     private MockMvc mockMvc;
 
-    @MockBean
+    @MockitoBean
     private ProductFacade productFacade;
 
     @Test
@@ -73,5 +74,34 @@ class ProductV1ControllerTest {
                 .andExpect(jsonPath("$.data.totalElements").value(1))
                 .andExpect(jsonPath("$.data.totalPages").value(1))
                 .andExpect(jsonPath("$.data.last").value(true));
+    }
+
+    @Test
+    @DisplayName("상품 상세 조회 API 응답에 오늘 기준 랭킹 정보가 포함된다.")
+    void getProduct_WhenRankingExists_ShouldReturnRankingInfo() throws Exception {
+        // given
+        Long productId = 1L;
+        ProductInfo info = new ProductInfo(
+                productId,
+                10L,
+                "Nike",
+                "Air Max",
+                new BigDecimal("1000.0000"),
+                15,
+                ZonedDateTime.now(),
+                new ProductRankingInfo("20260716", 3, 12.5)
+        );
+
+        given(productFacade.getProduct(productId)).willReturn(info);
+
+        // when & then
+        mockMvc.perform(get("/api/v1/products/{productId}", productId)
+                        .contentType(MediaType.APPLICATION_JSON))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.meta.result").value("SUCCESS"))
+                .andExpect(jsonPath("$.data.id").value(1))
+                .andExpect(jsonPath("$.data.ranking.date").value("20260716"))
+                .andExpect(jsonPath("$.data.ranking.rank").value(3))
+                .andExpect(jsonPath("$.data.ranking.score").value(12.5));
     }
 }

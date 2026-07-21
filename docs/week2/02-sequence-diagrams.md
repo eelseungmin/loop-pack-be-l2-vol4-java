@@ -548,6 +548,175 @@ sequenceDiagram
 
 ```mermaid
 sequenceDiagram
+    title Score Carry Over 기반 일간 랭킹 콜드 스타트 완화
+    participant Scheduler as RankingCarryOverScheduler
+    participant Job as RankingCarryOverJob
+    participant RankingStore as RankingRedisRepository
+    participant ProductRepository
+    participant Redis as Redis Ranking Store
+
+    Scheduler->>Job: 매일 00:00~00:10 carryOver(today)
+    Job->>RankingStore: EXISTS ranking:carry-over:done:{today}
+    alt 이미 처리됨
+        Job-->>Scheduler: skip
+    else 미처리
+        Job->>RankingStore: ZREVRANGE ranking:all:{yesterday} 0 999 WITHSCORES
+        alt 전일 랭킹 없음
+            Job->>RankingStore: SET ranking:carry-over:done:{today} EX 2 days
+        else 전일 Top N 존재
+            Job->>ProductRepository: findByIds(topProductIds)
+            alt DB 인프라 예외
+                ProductRepository--xJob: exception
+                Job-->>Scheduler: fail without done key
+            else 조회 성공
+                ProductRepository-->>Job: 삭제/미존재 제외 상품 목록
+                loop 정상 상품
+                    Job->>RankingStore: ZINCRBY ranking:all:{today} yesterdayScore*0.1 productId
+                end
+                Job->>RankingStore: EXPIRE ranking:all:{today} 2 days
+                Job->>RankingStore: SET ranking:carry-over:done:{today} EX 2 days
+            end
+        end
+    end
+    Note over Job,RankingStore: ranking:handled:{today}는 Kafka 이벤트 중복 방지 전용이므로 수정하지 않는다.
+```
+
+```mermaid
+sequenceDiagram
+    title Kafka Consumer 기반 일간 랭킹 ZSET 적재
+    participant Kafka as Kafka Broker
+    participant Consumer as RankingKafkaConsumer
+    participant ScorePolicy as RankingScorePolicy
+    participant Redis as Redis Ranking Store
+
+    Note over Kafka, Consumer: MetricsKafkaConsumer와 다른 Consumer Group으로 같은 상품 이벤트를 독립 소비한다.
+    Kafka->>Consumer: 이벤트 수신 (조회/좋아요/주문/상품삭제, 수동 Ack 모드)
+
+    alt 조회/좋아요/주문 이벤트
+        Consumer->>ScorePolicy: 이벤트 발생 시각 기준 dateKey 및 scoreDelta 계산
+        ScorePolicy-->>Consumer: yyyyMMdd, productId, weightedScore
+        Consumer->>Redis: SADD ranking:handled:{yyyyMMdd} eventId
+        alt Redis에서 최초 처리된 eventId
+            Consumer->>Redis: ZINCRBY ranking:all:{yyyyMMdd} weightedScore productId
+            Consumer->>Redis: EXPIRE ranking:all:{yyyyMMdd} 2 days
+            Consumer->>Redis: EXPIRE ranking:handled:{yyyyMMdd} 2 days
+        else 이미 Redis 랭킹에 반영된 eventId
+            Note right of Redis: Kafka 재처리로 인한 ZINCRBY 중복 가산 방지
+        end
+        Consumer->>Kafka: Redis 반영 성공 후 수동 Ack
+    else 상품 삭제 이벤트
+        Consumer->>Redis: ZREM ranking:all:{today} productId
+        Consumer->>Redis: ZREM ranking:all:{yesterday} productId
+        Note right of Redis: ZREM은 멱등적이므로 별도 handled Set 없이 처리
+        Consumer->>Kafka: 수동 Ack
+    end
+
+    Note over Consumer, Redis: 트래픽 증가 시 배치 리스너로 전환하여 (dateKey, productId) 단위 합산 후 Redis Pipeline으로 반영한다.
+```
+
+```mermaid
+sequenceDiagram
+    title 상품 논리 삭제 이벤트 기반 랭킹 ZSET 정리
+    actor Admin
+    participant ProductAdminController
+    participant ProductAdminFacade
+    participant ProductRepository
+    participant Outbox as OUTBOX_EVENTS
+    participant Relay as OutboxRelayScheduler
+    participant Kafka as Kafka Broker
+    participant Consumer as RankingKafkaConsumer
+    participant RankingStore as RankingRedisRepository
+
+    Admin->>ProductAdminController: DELETE /api-admin/v1/products/{productId}
+    ProductAdminController->>ProductAdminFacade: 상품 논리 삭제 요청
+    ProductAdminFacade->>ProductRepository: 상품 is_deleted=true 변경
+    ProductAdminFacade->>Outbox: PRODUCT_RANKING_EVENT 저장 (rankingEventType=PRODUCT_DELETED, INIT)
+    ProductAdminFacade-->>ProductAdminController: 삭제 완료
+    ProductAdminController-->>Admin: 200 OK
+
+    Relay->>Outbox: INIT 이벤트 조회
+    Relay->>Relay: OUTBOX_EVENTS.id를 eventId로 payload에 주입
+    Relay->>Kafka: PRODUCT_RANKING_EVENT 발행
+    Kafka->>Consumer: rankingEventType=PRODUCT_DELETED 수신
+    Consumer->>RankingStore: ZREM ranking:all:{today} productId
+    Consumer->>RankingStore: ZREM ranking:all:{yesterday} productId
+    Consumer->>Kafka: Redis 반영 성공 후 수동 Ack
+
+    Note over Consumer, RankingStore: TTL이 2일이므로 최근 2일 범위의 랭킹 Key에서 삭제 상품을 제거한다.
+```
+
+```mermaid
+sequenceDiagram
+    title Redis 랭킹 데이터 유실 시 Outbox/Event 로그 기반 재빌드
+    participant Operator
+    participant RebuildJob as RankingRebuildJob
+    participant EventSource as RankingRebuildEventRepository
+    participant Outbox as OUTBOX_EVENTS
+    participant EventContract as modules/event-contract
+    participant RankingContract as modules/ranking-contract
+    participant Redis as Redis Ranking Store
+
+    Operator->>RebuildJob: 오늘/전일 랭킹 재빌드 실행
+    RebuildJob->>EventSource: 재빌드 후보 이벤트 조회 요청
+    EventSource->>Outbox: event_type=PRODUCT_RANKING_EVENT<br/>status in (INIT, COMPLETED)<br/>createdAt >= 기준일-3일 조회
+    Outbox-->>EventSource: OutboxEventLog 목록
+    EventSource->>EventContract: OutboxEventLog(id, eventType, status, payload, createdAt)
+    EventSource->>RankingContract: OUTBOX_EVENTS.id를 eventId로 주입해 ProductRankingEvent 변환
+    EventSource-->>RebuildJob: ProductRankingEvent 목록
+    loop 이벤트별 재계산
+        RebuildJob->>RankingContract: occurredAt 기준 dateKey 및 scoreDelta 계산
+        RankingContract-->>RebuildJob: yyyyMMdd, productId, weightedScore
+        alt 조회/좋아요/주문 이벤트
+            RebuildJob->>Redis: ZINCRBY ranking:rebuild:all:{yyyyMMdd} weightedScore productId
+        else 상품 삭제 이벤트
+            RebuildJob->>Redis: ZREM ranking:rebuild:all:{today} productId
+            RebuildJob->>Redis: ZREM ranking:rebuild:all:{yesterday} productId
+        end
+    end
+    RebuildJob->>Redis: EXPIRE ranking:rebuild:* 2 days
+    RebuildJob->>Redis: RENAME ranking:rebuild:* -> ranking:* 운영 Key
+    Note over RebuildJob, Redis: 운영 Key 교체 중 실시간 Consumer 충돌 방지는 후속 운영 절차로 결정한다.
+```
+
+```mermaid
+sequenceDiagram
+    title 오늘의 인기상품 랭킹 조회 및 상품 상세 랭킹 포함
+    actor User
+    participant RankingController
+    participant RankingFacade
+    participant RankingStore as RankingRedisRepository
+    participant ProductRepository
+    participant ProductController
+    participant ProductFacade
+
+    User->>RankingController: GET /api/v1/rankings?date=yyyyMMdd&size=20&page=1
+    RankingController->>RankingFacade: 랭킹 페이지 조회 요청
+    RankingFacade->>RankingStore: ZREVRANGE ranking:all:{yyyyMMdd} with scores
+    RankingStore-->>RankingFacade: productId, score 목록
+    RankingFacade->>ProductRepository: 상품/브랜드 정보 조회
+    ProductRepository-->>RankingFacade: 상품 정보 목록
+    Note right of RankingFacade: 삭제 상품은 삭제 시 ZSET에서 제거됨<br/>남아 있다면 2차 방어로 응답에서 제외
+    RankingFacade-->>RankingController: 랭킹 순위 + 상품 정보 DTO
+    RankingController-->>User: 200 OK
+
+    User->>ProductController: GET /api/v1/products/{productId}
+    ProductController->>ProductFacade: 상품 상세 조회 요청
+    ProductFacade->>ProductRepository: 상품 상세 조회
+    ProductFacade->>RankingStore: ZREVRANK ranking:all:{today} productId
+    alt 오늘 랭킹에 존재
+        RankingStore-->>ProductFacade: rank
+        ProductFacade->>RankingStore: ZSCORE ranking:all:{today} productId
+        RankingStore-->>ProductFacade: score
+        ProductFacade-->>ProductController: 상품 상세 + ranking(rank, score, today)
+    else 오늘 랭킹에 없음
+        RankingStore-->>ProductFacade: null
+        ProductFacade-->>ProductController: 상품 상세 + ranking(null)
+    end
+    ProductController-->>User: 200 OK
+```
+
+```mermaid
+sequenceDiagram
     title 글로벌 대기열 진입 및 순번 조회 API
     actor User
     participant Controller as QueueController

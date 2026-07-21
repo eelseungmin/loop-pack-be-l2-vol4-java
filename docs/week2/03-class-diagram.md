@@ -143,6 +143,60 @@ classDiagram
         +LocalDateTime handledAt
     }
 
+    class RankingItem {
+        <<DTO>>
+        +Long productId
+        +String productName
+        +String brandName
+        +BigDecimal price
+        +int rank
+        +double score
+        +String date
+    }
+
+    class ProductRankingInfo {
+        <<DTO>>
+        +int rank
+        +double score
+        +String date
+    }
+
+    class OutboxEventLog {
+        <<modules/event-contract>>
+        +Long id
+        +String eventType
+        +String status
+        +String payload
+        +LocalDateTime createdAt
+    }
+
+    class ProductRankingEvent {
+        <<modules/ranking-contract>>
+        +String eventId
+        +RankingEventType rankingEventType
+        +Long productId
+        +BigDecimal price
+        +int amount
+        +LocalDateTime occurredAt
+    }
+
+    class RankingEventType {
+        <<modules/ranking-contract>>
+        VIEW
+        LIKE
+        ORDER
+        PRODUCT_DELETED
+    }
+
+    class RankingKeyPolicy {
+        <<modules/ranking-contract>>
+        +dateKey(occurredAt): String
+        +rankingKey(dateKey): String
+        +handledKey(dateKey): String
+        +rebuildRankingKey(dateKey): String
+        +carryOverDoneKey(dateKey): String
+    }
+
     class PaymentMethod {
         <<enumeration>>
         CARD
@@ -229,6 +283,9 @@ classDiagram
     class BrandAdminFacade {
         +deleteBrand(brandId)
     }
+    class ProductAdminFacade {
+        +deleteProduct(productId)
+    }
     class LikeFacade {
         +addLike(userId, productId)
         +removeLike(userId, productId)
@@ -241,7 +298,11 @@ classDiagram
         +consumeCouponIssueEvent(ConsumerRecord)
     }
     class ProductFacade {
+        +retrieveProduct(productId)
         +retrieveProducts(condition, pageable)
+    }
+    class RankingFacade {
+        +retrieveRankings(date, page, size)
     }
 
     %% 도메인 서비스 (Domain Service) - 여러 엔티티의 협력이 필요한 순수 로직
@@ -269,6 +330,8 @@ classDiagram
     PaymentFallbackScheduler ..> PaymentFacade
     
     BrandAdminFacade ..> ProductRepository
+    ProductAdminFacade ..> ProductRepository
+    ProductAdminFacade ..> OutboxEventRepository
     
     LikeFacade ..> LikeRepository
     LikeFacade ..> ProductRepository
@@ -281,6 +344,14 @@ classDiagram
     class OutboxRelayScheduler {
         +publishPendingEvents()
     }
+    class OutboxEventRepository {
+        <<interface>>
+        +save(outboxEvent)
+    }
+    class RankingRebuildEventRepository {
+        <<interface>>
+        +findEventsForRebuild(referenceDate): List~ProductRankingEvent~
+    }
     class KafkaEventProducer {
         <<interface>>
         +send(topic, partitionKey, payload)
@@ -288,11 +359,58 @@ classDiagram
     class MetricsKafkaConsumer {
         +consumeMetricsEvent(ConsumerRecord)
     }
+    class RankingKafkaConsumer {
+        +consumeRankingEvent(ConsumerRecord)
+    }
+    class RankingRebuildJob {
+        +rebuild(dateRange)
+    }
+    class RankingCarryOverJob {
+        +carryOver(today)
+    }
     class MetricsUpdateService {
         <<DomainService>>
         +addMetrics(eventId, payload)
     }
+    class RankingScorePolicy {
+        <<modules/ranking-contract>>
+        +calculate(event): double
+        +resolveDateKey(event): String
+    }
+    class RankingRedisRepository {
+        <<interface>>
+        +markHandled(dateKey, eventId): boolean
+        +increaseScore(dateKey, productId, score)
+        +findPage(dateKey, page, size)
+        +findTopRankings(dateKey, limit)
+        +findRank(dateKey, productId)
+        +findScore(dateKey, productId)
+        +removeProductFromRecentRankings(productId)
+        +markCarryOverDone(dateKey, ttl)
+        +isCarryOverDone(dateKey): boolean
+        +expire(dateKey, ttl)
+    }
     
     OutboxRelayScheduler ..> KafkaEventProducer
     MetricsKafkaConsumer ..> MetricsUpdateService
+    MetricsKafkaConsumer ..> ProductRankingEvent
+    RankingKafkaConsumer ..> ProductRankingEvent
+    RankingKafkaConsumer ..> RankingScorePolicy
+    RankingKafkaConsumer ..> RankingKeyPolicy
+    RankingKafkaConsumer ..> RankingRedisRepository
+    RankingRebuildJob ..> RankingRebuildEventRepository
+    RankingRebuildJob ..> RankingScorePolicy
+    RankingRebuildJob ..> RankingKeyPolicy
+    RankingRebuildJob ..> RankingRedisRepository
+    RankingCarryOverJob ..> RankingKeyPolicy
+    RankingCarryOverJob ..> RankingRedisRepository
+    RankingCarryOverJob ..> ProductRepository
+    RankingRebuildEventRepository ..> OutboxEventLog
+    RankingRebuildEventRepository ..> ProductRankingEvent
+    RankingFacade ..> RankingRedisRepository
+    RankingFacade ..> RankingKeyPolicy
+    RankingFacade ..> ProductRepository
+    RankingFacade ..> RankingItem
+    ProductFacade ..> RankingRedisRepository
+    ProductFacade ..> ProductRankingInfo
 ```
